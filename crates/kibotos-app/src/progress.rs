@@ -150,7 +150,8 @@ pub fn open(owner: Option<HWND>, title: &str, heading: &str, ctl: Arc<Control>) 
             lpfnWndProc: Some(proc),
             hInstance: hinst.into(),
             hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
-            hIcon: LoadIconW(None, IDI_APPLICATION).unwrap_or_default(),
+            hIcon: crate::app_icon(false),
+            hIconSm: crate::app_icon(true),
             hbrBackground: HBRUSH((windows::Win32::Graphics::Gdi::COLOR_BTNFACE.0 + 1) as _),
             lpszClassName: class,
             ..Default::default()

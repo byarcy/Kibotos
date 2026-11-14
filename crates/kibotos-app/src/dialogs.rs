@@ -301,6 +301,38 @@ pub fn ask_conflict(owner: HWND, target: &Path, new_size: Option<u64>, new_modif
     }
 }
 
+/// A question with custom (Spanish) buttons. Returns the chosen id, or
+/// `IDCANCEL` when the dialog is dismissed with Esc or the close button.
+pub fn choose(owner: HWND, title: &str, main: &str, content: &str, buttons: &[(i32, &str)]) -> i32 {
+    let title = wide(title);
+    let main = wide(main);
+    let body = wide(content);
+    let texts: Vec<Vec<u16>> = buttons.iter().map(|(_, t)| wide(t)).collect();
+    let specs: Vec<TASKDIALOG_BUTTON> = buttons
+        .iter()
+        .zip(&texts)
+        .map(|((id, _), t)| TASKDIALOG_BUTTON { nButtonID: *id, pszButtonText: PCWSTR(t.as_ptr()) })
+        .collect();
+    let cfg = TASKDIALOGCONFIG {
+        cbSize: std::mem::size_of::<TASKDIALOGCONFIG>() as u32,
+        hwndParent: owner,
+        dwFlags: TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW,
+        pszWindowTitle: PCWSTR(title.as_ptr()),
+        Anonymous1: TASKDIALOGCONFIG_0 { pszMainIcon: TD_WARNING_ICON },
+        pszMainInstruction: PCWSTR(main.as_ptr()),
+        pszContent: PCWSTR(body.as_ptr()),
+        cButtons: specs.len() as u32,
+        pButtons: specs.as_ptr(),
+        nDefaultButton: buttons.first().map_or(0, |b| b.0),
+        ..Default::default()
+    };
+    let mut chosen = IDCANCEL_;
+    if unsafe { TaskDialogIndirect(&cfg, Some(&mut chosen), None, None) }.is_err() {
+        return IDCANCEL_;
+    }
+    chosen
+}
+
 // ----------------------------------------------------------- reports
 
 /// Lists the entries that were refused for safety, if any.

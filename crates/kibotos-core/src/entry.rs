@@ -63,7 +63,8 @@ impl Entry {
         self.path.rsplit('/').next().unwrap_or(&self.path)
     }
 
-    pub(crate) fn new(id: usize, raw_path: &str, kind: EntryKind) -> Entry {
+    /// An entry with only a path and kind; the path is normalized.
+    pub fn new(id: usize, raw_path: &str, kind: EntryKind) -> Entry {
         Entry {
             id: id as EntryId,
             path: normalize_path(raw_path).into(),

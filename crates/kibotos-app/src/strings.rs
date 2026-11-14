@@ -10,6 +10,9 @@ pub mod es {
     pub const MENU_OPEN: &str = "&Abrir...\tCtrl+O";
     pub const MENU_EXTRACT: &str = "&Extraer...\tCtrl+E";
     pub const MENU_EXIT: &str = "&Salir";
+    pub const MENU_TOOLS: &str = "&Herramientas";
+    pub const MENU_INTEGRATE: &str = "&Integrar con Windows";
+    pub const MENU_UNINTEGRATE: &str = "&Quitar integración";
     pub const MENU_HELP: &str = "Ay&uda";
     pub const MENU_ABOUT: &str = "&Acerca de Kibotós";
 
@@ -53,6 +56,34 @@ pub mod es {
     pub const CONFLICT_ALL: &str = "Hacer lo mismo con los demás conflictos";
     pub const CONFLICT_EXISTING: &str = "Existente:";
     pub const CONFLICT_NEW: &str = "Nuevo:";
+
+    pub const PROGRESS_OPENING: &str = "Abriendo";
+    pub const OPEN_FAILED: &str = "No se pudo abrir el archivo";
+    pub const MODIFIED_TITLE: &str = "Archivos modificados";
+    pub const MODIFIED_MAIN: &str = "Modificaste archivos abiertos desde el comprimido";
+    pub const MODIFIED_TEXT: &str = "Kibotós todavía no puede guardar cambios dentro de un comprimido (llegará en la v0.2). Puedes guardar una copia de cada archivo junto al comprimido.";
+    pub const SAVE_COPIES: &str = "&Guardar copias";
+    pub const DISCARD: &str = "&Descartar cambios";
+    pub const MODIFIED_SUFFIX: &str = "modificado";
+    pub const COPIES_SAVED: &str = "Copias guardadas";
+    pub const COPY_FAILED: &str = "No se pudo guardar la copia de";
+
+    pub const CLI_USAGE: &str = "Uso:\n\n  kibotos.exe [archivo]\n      Abre el archivo comprimido.\n\n  kibotos.exe --extract-here archivo...\n      Extrae junto al archivo (en una carpeta con su nombre si tiene varios elementos sueltos).\n\n  kibotos.exe --extract-to-folder archivo...\n      Extrae en una carpeta con el nombre del archivo.\n\n  kibotos.exe --extract-dialog archivo...\n      Pregunta dónde extraer.\n\n  kibotos.exe --integrate | --unintegrate\n      Añade o quita el menú contextual y la opción «Abrir con» (solo para tu usuario).";
+
+    // Windows integration (registry labels and messages)
+    pub const REG_TYPE_NAME: &str = "Archivo comprimido";
+    pub const REG_OPEN: &str = "Abrir con Kibotós";
+    pub const REG_EXTRACT_HERE: &str = "Extraer aquí";
+    pub const REG_EXTRACT_FOLDER: &str = "Extraer en una carpeta con su nombre";
+    pub const REG_EXTRACT_DIALOG: &str = "Extraer ficheros...";
+    pub const INTEGRATE_TITLE: &str = "Integración con Windows";
+    pub const INTEGRATE_DONE: &str = "Kibotós se ha integrado con Windows para tu usuario (sin permisos de administrador).";
+    pub const INTEGRATE_MENU: &str = "Clic derecho en un comprimido → «Kibotós». En Windows 11 está dentro de «Mostrar más opciones».";
+    pub const INTEGRATE_DEFAULT: &str = "Para abrir los comprimidos con doble clic: clic derecho en uno → Abrir con → Elegir otra aplicación → Kibotós → Siempre. Windows no deja que un programa se ponga como predeterminado por su cuenta.";
+    pub const INTEGRATE_PATH: &str = "Programa registrado (si lo mueves, vuelve a integrarlo):";
+    pub const UNINTEGRATE_DONE: &str = "Se ha quitado la integración de Kibotós con Windows; no queda nada suyo en el registro.";
+    pub const UNINTEGRATE_NOTE: &str = "Si lo habías elegido como programa predeterminado, Windows volverá a preguntar con qué abrir esos archivos.";
+    pub const INTEGRATE_FAILED: &str = "No se pudo modificar el registro:";
 
     pub const EXTRACT_ERROR_TITLE: &str = "No se pudo extraer";
     pub const EXTRACT_CANCELLED: &str = "Extracción cancelada.";
@@ -126,7 +157,7 @@ pub fn bytes(n: u64) -> String {
 
 pub fn progress_detail(files_done: u64, files_total: u64, bytes_done: u64, bytes_total: u64, rate: f64) -> String {
     format!(
-        "{} de {} archivos  ·  {} de {}  ·  {}/s",
+        "{} de {} elementos  ·  {} de {}  ·  {}/s",
         number(files_done),
         number(files_total),
         bytes(bytes_done),
@@ -139,6 +170,18 @@ pub fn extracted(files: u64, total: u64, secs: f64, dest: &str) -> String {
     let f = if files == 1 { "archivo" } else { "archivos" };
     let secs = format!("{secs:.1}").replace('.', ",");
     format!("Extraídos {} {f} ({}) en {secs} s  →  {dest}", number(files), bytes(total))
+}
+
+pub fn opened(name: &str) -> String {
+    format!("Abierto «{name}»")
+}
+
+pub fn integrated(exe: &str) -> String {
+    format!("{}\n\n•  {}\n\n•  {}\n\n{}\n{exe}", t::INTEGRATE_DONE, t::INTEGRATE_MENU, t::INTEGRATE_DEFAULT, t::INTEGRATE_PATH)
+}
+
+pub fn unintegrated() -> String {
+    format!("{}\n\n{}", t::UNINTEGRATE_DONE, t::UNINTEGRATE_NOTE)
 }
 
 pub fn conflict_question(name: &str) -> String {

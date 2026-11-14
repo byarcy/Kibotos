@@ -9,6 +9,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime};
 
 use crate::safety::{UnsafeReason, safe_join};
+use crate::zone::Zone;
 use crate::{Entry, EntryKind, Error, Result, Timestamp};
 
 /// Receives extracted entries. Backends call `begin` for each selected entry
@@ -110,9 +111,13 @@ pub struct DiskSink {
     overwrite: Overwrite,
     on_conflict: Option<ConflictFn>,
     created: HashSet<PathBuf>,
+    /// Folders this sink created: they started empty, so files written into
+    /// them cannot overwrite anything and need no existence check.
+    fresh: HashSet<PathBuf>,
     current: Current,
     pool: Option<WriterPool>,
     threads: usize,
+    zone: Option<Arc<Zone>>,
     pub report: ExtractReport,
 }
 
@@ -125,9 +130,11 @@ impl DiskSink {
             overwrite: Overwrite::Always,
             on_conflict: None,
             created: HashSet::new(),
+            fresh: HashSet::new(),
             current: Current::None,
             pool: None,
             threads,
+            zone: None,
             report: ExtractReport::default(),
         }
     }
@@ -140,6 +147,12 @@ impl DiskSink {
     /// Callback for [`Overwrite::Ask`]. Called on the extraction thread.
     pub fn on_conflict(mut self, f: ConflictFn) -> Self {
         self.on_conflict = Some(f);
+        self
+    }
+
+    /// Copies the archive's Mark of the Web onto extracted files.
+    pub fn zone(mut self, zone: Option<Zone>) -> Self {
+        self.zone = zone.map(Arc::new);
         self
     }
 
@@ -176,6 +189,15 @@ impl DiskSink {
         if self.created.contains(dir) {
             return Ok(());
         }
+        if self.overwrite != Overwrite::Always {
+            // One check per new folder instead of one per file.
+            for anc in dir.ancestors() {
+                if self.created.contains(anc) || anc.exists() {
+                    break;
+                }
+                self.fresh.insert(anc.to_path_buf());
+            }
+        }
         fs::create_dir_all(dir)?;
         // Cache every ancestor so siblings do not hit the file system again.
         for anc in dir.ancestors() {
@@ -188,7 +210,8 @@ impl DiskSink {
 
     /// Applies the overwrite policy. `Ok(false)` means skip the entry.
     fn may_write(&mut self, target: &Path, entry: &Entry) -> Result<bool> {
-        if self.overwrite == Overwrite::Always || !target.exists() {
+        let in_fresh_dir = target.parent().is_some_and(|p| self.fresh.contains(p));
+        if self.overwrite == Overwrite::Always || in_fresh_dir || !target.exists() {
             return Ok(true);
         }
         if self.overwrite == Overwrite::Never {
@@ -260,16 +283,20 @@ impl ExtractSink for DiskSink {
         });
         match std::mem::replace(&mut self.current, Current::None) {
             Current::None => return Ok(()),
-            Current::File(_, w) => {
+            Current::File(path, w) => {
                 let file = w.into_inner().map_err(|e| e.into_error())?;
                 if let Some(t) = mtime {
                     let _ = file.set_modified(t);
+                }
+                drop(file);
+                if let Some(z) = &self.zone {
+                    z.apply(&path);
                 }
             }
             Current::Memory(path, data) => {
                 let threads = self.threads;
                 let pool = self.pool.get_or_insert_with(|| WriterPool::new(threads));
-                pool.submit(Job { path, data, mtime })?;
+                pool.submit(Job { path, data, mtime, zone: self.zone.clone() })?;
             }
         }
         self.report.files += 1;
@@ -298,6 +325,7 @@ struct Job {
     path: PathBuf,
     data: Vec<u8>,
     mtime: Option<SystemTime>,
+    zone: Option<Arc<Zone>>,
 }
 
 impl Job {
@@ -306,6 +334,10 @@ impl Job {
         f.write_all(&self.data)?;
         if let Some(t) = self.mtime {
             let _ = f.set_modified(t);
+        }
+        drop(f);
+        if let Some(z) = &self.zone {
+            z.apply(&self.path);
         }
         Ok(())
     }

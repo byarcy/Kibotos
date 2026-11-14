@@ -17,10 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::time::Instant;
 
 use kibotos_core::view::{Ordering, Sort, SortKey, refine_rows};
-use kibotos_core::{
-    ArchiveIndex, ArchiveReader, Conflict, Control, DiskSink, Entry, EntryId, EntryKind, Error, ExtractReport, ExtractSink,
-    NodeId, OpenOptions, Overwrite, Timestamp,
-};
+use kibotos_core::{ArchiveIndex, ArchiveReader, Control, Entry, EntryKind, Error, NodeId, OpenOptions};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     COLOR_WINDOW, CreateFontIndirectW, DeleteObject, HBRUSH, HFONT, HGDIOBJ, InvalidateRect, UpdateWindow,
@@ -33,23 +30,24 @@ use windows::Win32::UI::Controls::Dialogs::{
 use windows::Win32::UI::Controls::*;
 use windows::Win32::UI::HiDpi::{GetDpiForSystem, GetDpiForWindow, SystemParametersInfoForDpi};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetFocus, SetFocus, VK_BACK, VK_DOWN, VK_ESCAPE, VK_NEXT, VK_PRIOR, VK_RETURN, VK_UP,
+    GetFocus, GetKeyState, SetFocus, VK_BACK, VK_CONTROL, VK_DOWN, VK_ESCAPE, VK_NEXT, VK_PRIOR, VK_RETURN, VK_UP,
 };
-use windows::Win32::UI::Shell::{DefSubclassProc, DragFinish, DragQueryFileW, HDROP, SetWindowSubclass};
+use windows::Win32::UI::Shell::{
+    DefSubclassProc, DragFinish, DragQueryFileW, HDROP, SHELLEXECUTEINFOW, SetWindowSubclass, ShellExecuteExW,
+};
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{HSTRING, PCWSTR, PWSTR, w};
 
 use crate::dialogs;
 use crate::icons::IconCache;
+use crate::job::{self, Dest, ExtractDone, ExtractJob, WM_APP_CONFLICT, WM_APP_EXTRACTED};
 use crate::progress;
+use crate::temp;
 use crate::strings::{self, t};
 use crate::{format, timing, wide};
 
 const WM_APP_LOADED: u32 = WM_APP + 1;
 const WM_APP_ICONS: u32 = WM_APP + 2;
-const WM_APP_EXTRACTED: u32 = WM_APP + 3;
-/// Sent (blocking) by the extraction thread: "this file exists, what now?"
-const WM_APP_CONFLICT: u32 = WM_APP + 4;
 
 const ID_OPEN: u16 = 101;
 const ID_EXIT: u16 = 102;
@@ -57,6 +55,8 @@ const ID_FIND: u16 = 103;
 const ID_UP: u16 = 104;
 const ID_EXTRACT: u16 = 105;
 const ID_ABOUT: u16 = 201;
+const ID_INTEGRATE: u16 = 301;
+const ID_UNINTEGRATE: u16 = 302;
 const ID_LIST: usize = 1000;
 const ID_FILTER: usize = 1001;
 
@@ -124,6 +124,9 @@ struct App {
     shown: (String, String, String),
     /// The running extraction, if any (one at a time).
     job: Option<Arc<Control>>,
+    /// The user closed the window during an extraction: close once it has
+    /// stopped and cleaned up its partial file.
+    close_pending: bool,
 }
 
 thread_local! {
@@ -177,7 +180,8 @@ pub fn run(archive: Option<PathBuf>) {
             lpfnWndProc: Some(wndproc),
             hInstance: hinst.into(),
             hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
-            hIcon: LoadIconW(None, IDI_APPLICATION).unwrap_or_default(),
+            hIcon: crate::app_icon(false),
+            hIconSm: crate::app_icon(true),
             hbrBackground: HBRUSH((COLOR_WINDOW.0 + 1) as _),
             lpszClassName: class,
             ..Default::default()
@@ -210,6 +214,7 @@ pub fn run(archive: Option<PathBuf>) {
 
         let _ = ShowWindow(hwnd, SW_SHOWDEFAULT);
         let _ = UpdateWindow(hwnd);
+        std::thread::spawn(temp::clean_stale);
 
         let accel = CreateAcceleratorTableW(&[
             ACCEL { fVirt: FCONTROL | FVIRTKEY, key: b'O' as u16, cmd: ID_OPEN },
@@ -231,6 +236,7 @@ pub fn run(archive: Option<PathBuf>) {
                 DispatchMessageW(&msg);
             }
         }
+        temp::cleanup();
     }
 }
 
@@ -242,9 +248,13 @@ unsafe fn build_menu() -> HMENU {
         let _ = AppendMenuW(file, MF_STRING, ID_EXTRACT as usize, &HSTRING::from(t::MENU_EXTRACT));
         let _ = AppendMenuW(file, MF_SEPARATOR, 0, PCWSTR::null());
         let _ = AppendMenuW(file, MF_STRING, ID_EXIT as usize, &HSTRING::from(t::MENU_EXIT));
+        let tools = CreatePopupMenu().unwrap_or_default();
+        let _ = AppendMenuW(tools, MF_STRING, ID_INTEGRATE as usize, &HSTRING::from(t::MENU_INTEGRATE));
+        let _ = AppendMenuW(tools, MF_STRING, ID_UNINTEGRATE as usize, &HSTRING::from(t::MENU_UNINTEGRATE));
         let help = CreatePopupMenu().unwrap_or_default();
         let _ = AppendMenuW(help, MF_STRING, ID_ABOUT as usize, &HSTRING::from(t::MENU_ABOUT));
         let _ = AppendMenuW(bar, MF_POPUP, file.0 as usize, &HSTRING::from(t::MENU_FILE));
+        let _ = AppendMenuW(bar, MF_POPUP, tools.0 as usize, &HSTRING::from(t::MENU_TOOLS));
         let _ = AppendMenuW(bar, MF_POPUP, help.0 as usize, &HSTRING::from(t::MENU_HELP));
         bar
     }
@@ -445,7 +455,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 on_extracted(hwnd, lp);
                 LRESULT(0)
             }
-            WM_APP_CONFLICT => LRESULT(on_conflict(hwnd, lp) as isize),
+            WM_APP_CONFLICT => LRESULT(job::answer_conflict(hwnd, lp)),
             WM_APP_ICONS => {
                 let (folder, icons) = *Box::from_raw(lp.0 as *mut (i32, Vec<(String, i32)>));
                 with_app(|a| a.icons.warm(folder, icons));
@@ -470,6 +480,22 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 apply_dpi(hwnd, (wp.0 >> 16) as u32 & 0xFFFF);
                 LRESULT(0)
             }
+            WM_CLOSE => {
+                if confirm_close(hwnd) {
+                    let _ = DestroyWindow(hwnd);
+                }
+                LRESULT(0)
+            }
+            WM_INITMENUPOPUP => {
+                // Show the current integration state in Herramientas.
+                let menu = HMENU(wp.0 as _);
+                let integrated = crate::integrate::installed_exe().is_some();
+                let check = if integrated { MF_CHECKED } else { MF_UNCHECKED };
+                let enable = if integrated { MF_ENABLED } else { MF_GRAYED };
+                CheckMenuItem(menu, ID_INTEGRATE as u32, (MF_BYCOMMAND | check).0);
+                let _ = EnableMenuItem(menu, ID_UNINTEGRATE as u32, MF_BYCOMMAND | enable);
+                LRESULT(0)
+            }
             WM_DESTROY => {
                 PostQuitMessage(0);
                 LRESULT(0)
@@ -488,10 +514,16 @@ unsafe fn on_command(hwnd: HWND, id: u16) {
                 }
             }
             ID_EXIT => {
-                let _ = DestroyWindow(hwnd);
+                let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
             }
             ID_FIND => focus_filter(),
             ID_EXTRACT => on_extract(hwnd),
+            ID_INTEGRATE => {
+                crate::cli::integration(hwnd, true);
+            }
+            ID_UNINTEGRATE => {
+                crate::cli::integration(hwnd, false);
+            }
             ID_UP => go_up(),
             ID_ABOUT => {
                 MessageBoxW(
@@ -514,7 +546,7 @@ unsafe fn on_notify(lp: LPARAM) -> LRESULT {
             NM_DBLCLK => {
                 let item = (*(lp.0 as *const NMITEMACTIVATE)).iItem;
                 if item >= 0 {
-                    activate(item as usize);
+                    activate(item as usize, false);
                 }
             }
             LVN_COLUMNCLICK => {
@@ -538,7 +570,7 @@ unsafe extern "system" fn list_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
                 let vk = wp.0 as u16;
                 if vk == VK_RETURN.0 {
                     if let Some(i) = focused_row() {
-                        activate(i);
+                        activate(i, ctrl_down());
                     }
                     return LRESULT(0);
                 }
@@ -585,7 +617,7 @@ unsafe extern "system" fn filter_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 }
                 if vk == VK_RETURN.0 {
                     if let Some(i) = focused_row() {
-                        activate(i);
+                        activate(i, ctrl_down());
                     }
                     return LRESULT(0);
                 }
@@ -830,8 +862,13 @@ fn focused_row() -> Option<usize> {
     (i >= 0).then_some(i as usize)
 }
 
-/// Enter or double-click on a row.
-fn activate(row: usize) {
+fn ctrl_down() -> bool {
+    unsafe { GetKeyState(VK_CONTROL.0 as i32) < 0 }
+}
+
+/// Enter or double-click on a row. Folders open; files open with their
+/// program. `locate` (Ctrl+Enter) shows a filter result in its folder.
+fn activate(row: usize, locate: bool) {
     let Some((node, is_dir, parent, filtering)) = with_app(|a| {
         let arc = a.archive.as_ref()?;
         let node = *a.rows.get(row)?;
@@ -844,13 +881,14 @@ fn activate(row: usize) {
     };
     if node == UP {
         go_up();
+    } else if locate && filtering {
+        navigate(parent.unwrap_or(ArchiveIndex::ROOT), Some(node));
     } else if is_dir {
         navigate(node, None);
-    } else if filtering {
-        // A file found by the filter: show it in its folder.
-        navigate(parent.unwrap_or(ArchiveIndex::ROOT), Some(node));
+    } else {
+        let hwnd = with_app(|a| unsafe { GetParent(a.list) }.unwrap_or_default());
+        open_entry(hwnd, node);
     }
-    // Opening a file inside the archive comes in step 5.
 }
 
 /// Shows `folder`, leaving filter mode.
@@ -986,30 +1024,6 @@ fn update_sort_arrows() {
 
 // ------------------------------------------------------------ extract
 
-/// What to extract and how paths are rooted.
-struct ExtractJob {
-    archive: PathBuf,
-    password: Option<String>,
-    ids: Vec<EntryId>,
-    /// Archive folder stripped from paths ("" keeps full paths).
-    base: String,
-    dest: PathBuf,
-    /// The selection holds encrypted entries: check the password first.
-    verify: bool,
-}
-
-struct ExtractDone {
-    job: ExtractJob,
-    result: kibotos_core::Result<ExtractReport>,
-    secs: f64,
-}
-
-struct ConflictQuery {
-    target: PathBuf,
-    size: Option<u64>,
-    modified: Option<Timestamp>,
-}
-
 fn selected_rows(list: HWND) -> Vec<usize> {
     let mut rows = Vec::new();
     let mut i = -1isize;
@@ -1061,117 +1075,169 @@ fn on_extract(hwnd: HWND) {
         let Some(pw) = dialogs::ask_password(hwnd, &file_name(&archive), false) else { return };
         password = Some(pw);
     }
-    start_extract(hwnd, ExtractJob { archive, password, ids, base, dest, verify: encrypted });
+    start_extract(
+        hwnd,
+        ExtractJob { archive, password, ids: Some(ids), base, dest: Dest::Folder(dest), verify: encrypted, open_after: None },
+    );
 }
 
-/// Discards data: used to test a password on one small entry.
-struct NullSink;
-
-impl ExtractSink for NullSink {
-    fn begin(&mut self, _: &Entry) -> kibotos_core::Result<Option<Box<dyn std::io::Write + '_>>> {
-        Ok(Some(Box::new(std::io::sink())))
-    }
-    fn finish(&mut self, _: &Entry) -> kibotos_core::Result<()> {
-        Ok(())
-    }
-}
-
-/// Decodes the smallest selected encrypted entry, so a wrong password is
-/// reported before anything is written to disk.
-fn verify_password(reader: &mut dyn ArchiveReader, ids: &[EntryId]) -> kibotos_core::Result<()> {
-    const MAX_TEST: u64 = 16 << 20;
-    let entries = reader.entries();
-    let smallest = ids
-        .iter()
-        .map(|&id| &entries[id as usize])
-        .filter(|e| e.encrypted && e.kind == EntryKind::File)
-        .min_by_key(|e| e.size.unwrap_or(u64::MAX));
-    match smallest {
-        Some(e) if e.size.unwrap_or(u64::MAX) <= MAX_TEST => {
-            let id = e.id;
-            reader.extract(&[id], &mut NullSink, &Control::new())
+/// Extracts one file to a fresh temporary folder and opens it.
+fn open_entry(hwnd: HWND, node: NodeId) {
+    let Some((archive, password, id, path, encrypted)) = with_app(|a| {
+        if a.job.is_some() {
+            return None;
         }
-        _ => Ok(()),
+        let arc = a.archive.as_ref()?;
+        let id = arc.index.entry(node)?;
+        let e = &arc.reader.entries()[id as usize];
+        Some((arc.path.clone(), arc.password.clone(), id, e.path.to_string(), e.encrypted))
+    }) else {
+        return;
+    };
+    let (base, name) = path.rsplit_once('/').unwrap_or(("", &path));
+    let slot = match temp::new_slot() {
+        Ok(d) => d,
+        Err(e) => {
+            dialogs::message(hwnd, t::OPEN_FAILED, &e.to_string(), MB_ICONERROR);
+            return;
+        }
+    };
+    // The name may still be unsafe (e.g. "CON"); then nothing is opened and
+    // the extraction reports it as blocked.
+    let target = kibotos_core::safety::safe_join(&slot, name).ok();
+    let mut password = password;
+    if encrypted && password.is_none() {
+        let Some(pw) = dialogs::ask_password(hwnd, &file_name(&archive), false) else { return };
+        password = Some(pw);
+    }
+    start_extract(
+        hwnd,
+        ExtractJob {
+            archive,
+            password,
+            ids: Some(vec![id]),
+            base: base.to_string(),
+            dest: Dest::Folder(slot),
+            verify: encrypted,
+            open_after: Some(target.unwrap_or_default()),
+        },
+    );
+}
+
+fn shell_open(hwnd: HWND, file: &Path) {
+    ensure_com();
+    let path = HSTRING::from(file.as_os_str());
+    let dir = HSTRING::from(file.parent().unwrap_or(file).as_os_str());
+    let mut info = SHELLEXECUTEINFOW {
+        cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+        hwnd,
+        lpFile: PCWSTR(path.as_ptr()),
+        lpDirectory: PCWSTR(dir.as_ptr()),
+        nShow: SW_SHOWNORMAL.0,
+        ..Default::default()
+    };
+    // Without a registered program Windows shows its "Open with" dialog.
+    if let Err(e) = unsafe { ShellExecuteExW(&mut info) } {
+        const ERROR_CANCELLED: i32 = 1223;
+        if e.code().0 & 0xFFFF != ERROR_CANCELLED {
+            dialogs::message(hwnd, t::OPEN_FAILED, &format!("{}\n\n{}", file.display(), e.message()), MB_ICONERROR);
+        }
+    }
+}
+
+/// Before closing: files edited after being opened from the archive would
+/// be lost with the temporary folder, so offer to keep copies.
+fn confirm_close(hwnd: HWND) -> bool {
+    // Never exit in the middle of a file: cancel, and close when the worker
+    // reports back (it removes the partial file first).
+    let running = with_app(|a| {
+        let job = a.job.clone();
+        if let Some(ctl) = &job {
+            ctl.cancel();
+            a.close_pending = true;
+        }
+        job.is_some()
+    });
+    if running {
+        return false;
+    }
+    let modified = temp::modified();
+    if modified.is_empty() {
+        return true;
+    }
+    const SAVE: i32 = 100;
+    const DISCARD: i32 = 101;
+    let mut content = format!("{}\n", t::MODIFIED_TEXT);
+    for (f, _) in &modified {
+        content.push_str(&format!("\n•  {}", file_name(f)));
+    }
+    let choice = dialogs::choose(
+        hwnd,
+        t::MODIFIED_TITLE,
+        t::MODIFIED_MAIN,
+        &content,
+        &[(SAVE, t::SAVE_COPIES), (DISCARD, t::DISCARD), (IDCANCEL.0, t::CANCEL)],
+    );
+    match choice {
+        SAVE => {
+            let mut saved = Vec::new();
+            for (f, dir) in &modified {
+                match temp::save_copy(f, dir) {
+                    Ok(p) => saved.push(p.display().to_string()),
+                    Err(e) => {
+                        let text = format!("{} «{}»:\n{e}", t::COPY_FAILED, file_name(f));
+                        dialogs::message(hwnd, t::MODIFIED_TITLE, &text, MB_ICONERROR);
+                        return false;
+                    }
+                }
+            }
+            dialogs::message(hwnd, t::COPIES_SAVED, &saved.join("\n"), MB_ICONINFORMATION);
+            true
+        }
+        DISCARD => true,
+        _ => false,
     }
 }
 
 fn start_extract(hwnd: HWND, job: ExtractJob) {
     let ctl = Arc::new(Control::new());
     with_app(|a| a.job = Some(ctl.clone()));
-    let name = file_name(&job.archive);
-    let title = format!("{} {name}", t::PROGRESS_EXTRACTING);
-    let heading = format!("{name}  →  {}", job.dest.display());
+    let name = match &job.open_after {
+        Some(target) => file_name(target),
+        None => file_name(&job.archive),
+    };
+    let verb = if job.open_after.is_some() { t::PROGRESS_OPENING } else { t::PROGRESS_EXTRACTING };
+    let title = format!("{verb} {name}");
+    let heading = format!("{name}  →  {}", job.dest.shown().display());
     progress::open(Some(hwnd), &title, &heading, ctl.clone());
-    set_status(t::PROGRESS_EXTRACTING, "");
-
-    let target = hwnd.0 as isize;
-    std::thread::spawn(move || {
-        let t0 = Instant::now();
-        let result = (|| {
-            let opts = OpenOptions { password: job.password.clone() };
-            let mut reader = kibotos_core::open(&job.archive, &opts)?;
-            if job.verify {
-                verify_password(reader.as_mut(), &job.ids)?;
-            }
-            let ask = Box::new(move |path: &Path, entry: &Entry| {
-                let q = ConflictQuery { target: path.to_path_buf(), size: entry.size, modified: entry.modified };
-                // Blocks this worker until the UI thread answers.
-                let r = unsafe {
-                    SendMessageW(HWND(target as _), WM_APP_CONFLICT, None, Some(LPARAM(&q as *const _ as isize)))
-                };
-                conflict_from_code(r.0)
-            });
-            let mut sink = DiskSink::new(&job.dest).base(&job.base).overwrite(Overwrite::Ask).on_conflict(ask);
-            let extracted = reader.extract(&job.ids, &mut sink, &ctl);
-            let closed = sink.close();
-            extracted?;
-            closed
-        })();
-        let done = Box::into_raw(Box::new(ExtractDone { job, result, secs: t0.elapsed().as_secs_f64() }));
-        unsafe {
-            if PostMessageW(Some(HWND(target as _)), WM_APP_EXTRACTED, WPARAM(0), LPARAM(done as isize)).is_err() {
-                drop(Box::from_raw(done));
-            }
-        }
-    });
-}
-
-fn conflict_code(c: Conflict) -> i32 {
-    match c {
-        Conflict::Replace => 1,
-        Conflict::Skip => 2,
-        Conflict::ReplaceAll => 3,
-        Conflict::SkipAll => 4,
-        Conflict::Cancel => 5,
-    }
-}
-
-fn conflict_from_code(code: isize) -> Conflict {
-    match code {
-        1 => Conflict::Replace,
-        2 => Conflict::Skip,
-        3 => Conflict::ReplaceAll,
-        4 => Conflict::SkipAll,
-        _ => Conflict::Cancel,
-    }
-}
-
-unsafe fn on_conflict(hwnd: HWND, lp: LPARAM) -> i32 {
-    let q = unsafe { &*(lp.0 as *const ConflictQuery) };
-    let owner = progress::show_now().unwrap_or(hwnd);
-    conflict_code(dialogs::ask_conflict(owner, &q.target, q.size, q.modified))
+    set_status(verb, "");
+    job::spawn(hwnd, job, ctl);
 }
 
 unsafe fn on_extracted(hwnd: HWND, lp: LPARAM) {
-    let done = unsafe { Box::from_raw(lp.0 as *mut ExtractDone) };
+    let ExtractDone { mut job, dest, result, secs } = unsafe { job::take_done(lp) };
     progress::close();
     with_app(|a| a.job = None);
-    let ExtractDone { mut job, result, secs } = *done;
+    timing::mark("extract", &format!("{} in {secs:.2} s", dest.display()));
+    if with_app(|a| std::mem::take(&mut a.close_pending)) {
+        let _ = unsafe { PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0)) };
+        return;
+    }
     match result {
         Ok(report) => {
             let summary = with_app(|a| a.shown.2.clone());
-            let text = strings::extracted(report.files, report.bytes, secs, &job.dest.display().to_string());
-            set_status(&text, &summary);
+            match &job.open_after {
+                Some(target) if report.files > 0 && target.is_file() => {
+                    temp::track(target, &job.archive);
+                    set_status(&strings::opened(&file_name(target)), &summary);
+                    shell_open(hwnd, target);
+                }
+                Some(_) => refresh_status(),
+                None => {
+                    let text = strings::extracted(report.files, report.bytes, secs, &dest.display().to_string());
+                    set_status(&text, &summary);
+                }
+            }
             dialogs::show_blocked(hwnd, &report);
         }
         Err(Error::Cancelled) => {

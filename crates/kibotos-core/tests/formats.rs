@@ -537,3 +537,31 @@ fn progress_is_reported() {
     assert_eq!(pr.bytes_total, total);
     assert_eq!(pr.entries_done, pr.entries_total);
 }
+
+#[cfg(windows)]
+#[test]
+fn mark_of_the_web_reaches_risky_files() {
+    use kibotos_core::zone::{self, Zone, ZonePolicy};
+    let dir = TempDir::new().unwrap();
+    let p = dir.path().join("descargado.zip");
+    let mut z = zip::ZipWriter::new(File::create(&p).unwrap());
+    let o = zip::write::SimpleFileOptions::default();
+    // A small file (writer pool), a large one (streamed) and a harmless one.
+    for (name, len) in [("setup.exe", 10), ("grande.docm", 400_000), ("leeme.txt", 10)] {
+        z.start_file(name, o).unwrap();
+        z.write_all(&noise(len)).unwrap();
+    }
+    z.finish().unwrap();
+    let mut ads = p.as_os_str().to_owned();
+    ads.push(":Zone.Identifier");
+    std::fs::write(&ads, b"[ZoneTransfer]\r\nZoneId=3\r\n").unwrap();
+
+    let mark = zone::read(&p).expect("archive has a mark");
+    let dest = dir.path().join("out");
+    let mut sink = DiskSink::new(&dest).zone(Some(Zone { data: mark, policy: ZonePolicy::Risky }));
+    open(&p).extract_all(&mut sink, &Control::new()).unwrap();
+    sink.close().unwrap();
+    assert!(zone::read(&dest.join("setup.exe")).is_some());
+    assert!(zone::read(&dest.join("grande.docm")).is_some());
+    assert!(zone::read(&dest.join("leeme.txt")).is_none());
+}
