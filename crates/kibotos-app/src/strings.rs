@@ -85,6 +85,35 @@ pub mod es {
     pub const UNINTEGRATE_NOTE: &str = "Si lo habías elegido como programa predeterminado, Windows volverá a preguntar con qué abrir esos archivos.";
     pub const INTEGRATE_FAILED: &str = "No se pudo modificar el registro:";
 
+    // Context menu of the list
+    pub const CTX_OPEN: &str = "&Abrir\tEnter";
+    pub const CTX_OPEN_WITH: &str = "Abrir &con...";
+    pub const CTX_EXTRACT: &str = "&Extraer...\tCtrl+E";
+    pub const CTX_EXTRACT_ALL: &str = "&Extraer todo...\tCtrl+E";
+    pub const CTX_EXTRACT_NEXT: &str = "Extraer &junto al comprimido";
+    pub const CTX_LOCATE: &str = "&Mostrar en su carpeta\tCtrl+Enter";
+    pub const CTX_COPY_PATH: &str = "Copiar &ruta";
+    pub const CTX_PROPERTIES: &str = "&Propiedades\tAlt+Enter";
+    pub const STATUS_PATH_COPIED: &str = "Ruta copiada al portapapeles.";
+
+    // Properties
+    pub const PROP_TITLE: &str = "Propiedades";
+    pub const PROP_NAME: &str = "Nombre:";
+    pub const PROP_LOCATION: &str = "Ubicación:";
+    pub const PROP_TYPE: &str = "Tipo:";
+    pub const PROP_FOLDER: &str = "Carpeta";
+    pub const PROP_FILE: &str = "Archivo";
+    pub const PROP_LINK: &str = "Enlace simbólico";
+    pub const PROP_CONTAINS: &str = "Contiene:";
+    pub const PROP_SIZE: &str = "Tamaño:";
+    pub const PROP_PACKED: &str = "Comprimido:";
+    pub const PROP_MODIFIED: &str = "Modificado:";
+    pub const PROP_ENCRYPTED: &str = "Cifrado:";
+    pub const PROP_SELECTION: &str = "Selección:";
+    pub const PROP_UNKNOWN: &str = "desconocido";
+    pub const YES: &str = "Sí";
+    pub const NO: &str = "No";
+
     pub const EXTRACT_ERROR_TITLE: &str = "No se pudo extraer";
     pub const EXTRACT_CANCELLED: &str = "Extracción cancelada.";
     pub const BLOCKED_TITLE: &str = "Elementos omitidos por seguridad";
@@ -170,6 +199,20 @@ pub fn extracted(files: u64, total: u64, secs: f64, dest: &str) -> String {
     let f = if files == 1 { "archivo" } else { "archivos" };
     let secs = format!("{secs:.1}").replace('.', ",");
     format!("Extraídos {} {f} ({}) en {secs} s  →  {dest}", number(files), bytes(total))
+}
+
+/// "12,3 MB (12.912.345 bytes)"; exact bytes are useful in properties.
+pub fn bytes_exact(n: u64) -> String {
+    if n < 1024 { format!("{} bytes", number(n)) } else { format!("{} ({} bytes)", bytes(n), number(n)) }
+}
+
+/// "35 %" of the original size.
+pub fn ratio(packed: u64, size: u64) -> String {
+    if size == 0 { String::new() } else { format!("  ·  {} %", (packed as f64 * 100.0 / size as f64).round() as u64) }
+}
+
+pub fn selection_count(n: usize) -> String {
+    if n == 1 { "1 elemento".into() } else { format!("{} elementos seleccionados", number(n as u64)) }
 }
 
 pub fn opened(name: &str) -> String {

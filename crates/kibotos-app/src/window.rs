@@ -17,12 +17,16 @@ use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::time::Instant;
 
 use kibotos_core::view::{Ordering, Sort, SortKey, refine_rows};
-use kibotos_core::{ArchiveIndex, ArchiveReader, Control, Entry, EntryKind, Error, NodeId, OpenOptions};
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+use kibotos_core::{ArchiveIndex, ArchiveReader, Control, Entry, EntryId, EntryKind, Error, NodeId, OpenOptions};
+use windows::Win32::Foundation::{HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     COLOR_WINDOW, CreateFontIndirectW, DeleteObject, HBRUSH, HFONT, HGDIOBJ, InvalidateRect, UpdateWindow,
 };
+use windows::Win32::Graphics::Gdi::ClientToScreen;
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx};
+use windows::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData};
+use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
+use windows::Win32::System::Ole::{CF_UNICODETEXT, OleInitialize};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::Dialogs::{
     GetOpenFileNameW, OFN_EXPLORER, OFN_FILEMUSTEXIST, OFN_HIDEREADONLY, OFN_PATHMUSTEXIST, OPENFILENAMEW,
@@ -30,7 +34,8 @@ use windows::Win32::UI::Controls::Dialogs::{
 use windows::Win32::UI::Controls::*;
 use windows::Win32::UI::HiDpi::{GetDpiForSystem, GetDpiForWindow, SystemParametersInfoForDpi};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetFocus, GetKeyState, SetFocus, VK_BACK, VK_CONTROL, VK_DOWN, VK_ESCAPE, VK_NEXT, VK_PRIOR, VK_RETURN, VK_UP,
+    GetFocus, GetKeyState, SetFocus, VK_BACK, VK_CONTROL, VK_DOWN, VK_ESCAPE, VK_MENU, VK_NEXT, VK_PRIOR, VK_RETURN,
+    VK_UP,
 };
 use windows::Win32::UI::Shell::{
     DefSubclassProc, DragFinish, DragQueryFileW, HDROP, SHELLEXECUTEINFOW, SetWindowSubclass, ShellExecuteExW,
@@ -39,6 +44,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{HSTRING, PCWSTR, PWSTR, w};
 
 use crate::dialogs;
+use crate::drag;
 use crate::icons::IconCache;
 use crate::job::{self, Dest, ExtractDone, ExtractJob, WM_APP_CONFLICT, WM_APP_EXTRACTED};
 use crate::progress;
@@ -57,7 +63,18 @@ const ID_EXTRACT: u16 = 105;
 const ID_ABOUT: u16 = 201;
 const ID_INTEGRATE: u16 = 301;
 const ID_UNINTEGRATE: u16 = 302;
+const CM_OPEN: u32 = 401;
+const CM_OPEN_WITH: u32 = 402;
+const CM_EXTRACT: u32 = 403;
+const CM_EXTRACT_NEXT: u32 = 404;
+const CM_LOCATE: u32 = 405;
+const CM_COPY_PATH: u32 = 406;
+const CM_PROPERTIES: u32 = 407;
 const ID_LIST: usize = 1000;
+
+/// Gives up waiting for the shell to copy the drag marker.
+const TIMER_DROP: usize = 1;
+const DROP_WAIT_MS: u32 = 60_000;
 const ID_FILTER: usize = 1001;
 
 const SEL_FOCUS: LIST_VIEW_ITEM_STATE_FLAGS = LIST_VIEW_ITEM_STATE_FLAGS(LVIS_SELECTED.0 | LVIS_FOCUSED.0);
@@ -127,6 +144,28 @@ struct App {
     /// The user closed the window during an extraction: close once it has
     /// stopped and cleaned up its partial file.
     close_pending: bool,
+    /// A drag dropped on the shell: waiting to learn the folder.
+    drop_wait: Option<(drag::Watch, Pick)>,
+    /// A drag loop is running; a folder found meanwhile waits in
+    /// `drop_found`.
+    dragging: bool,
+    drop_found: Option<PathBuf>,
+    /// An extraction the UI waits for in a nested loop (drop on another
+    /// program), and its result.
+    blocking: bool,
+    blocking_done: Option<ExtractDone>,
+}
+
+/// The entries a command acts on.
+#[derive(Clone)]
+struct Pick {
+    archive: PathBuf,
+    password: Option<String>,
+    /// Selected (or implied) tree nodes.
+    nodes: Vec<NodeId>,
+    ids: Vec<EntryId>,
+    bases: Vec<String>,
+    encrypted: bool,
 }
 
 thread_local! {
@@ -137,14 +176,14 @@ fn with_app<R>(f: impl FnOnce(&mut App) -> R) -> R {
     APP.with(|a| f(&mut a.borrow_mut()))
 }
 
-/// COM is needed by the shell (icons, dialogs) but not to show the window,
-/// so it is initialized on first use.
+/// COM/OLE is needed by the shell (icons, dialogs, drag and drop) but not
+/// to show the window, so it is initialized on first use.
 fn ensure_com() {
     thread_local!(static DONE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
     DONE.with(|d| {
         if !d.replace(true) {
             unsafe {
-                let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+                let _ = OleInitialize(None);
             }
         }
     });
@@ -456,6 +495,25 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 LRESULT(0)
             }
             WM_APP_CONFLICT => LRESULT(job::answer_conflict(hwnd, lp)),
+            WM_CONTEXTMENU => {
+                let list = with_app(|a| a.list);
+                if HWND(wp.0 as _) == list {
+                    on_context_menu(hwnd, lp);
+                    LRESULT(0)
+                } else {
+                    DefWindowProcW(hwnd, msg, wp, lp)
+                }
+            }
+            drag::WM_APP_SHNOTIFY => {
+                on_shell_notify(hwnd, wp, lp);
+                LRESULT(0)
+            }
+            WM_TIMER if wp.0 == TIMER_DROP => {
+                let _ = KillTimer(Some(hwnd), TIMER_DROP);
+                // The drop never reached a folder (e.g. the recycle bin).
+                with_app(|a| a.drop_wait = None);
+                LRESULT(0)
+            }
             WM_APP_ICONS => {
                 let (folder, icons) = *Box::from_raw(lp.0 as *mut (i32, Vec<(String, i32)>));
                 with_app(|a| a.icons.warm(folder, icons));
@@ -549,6 +607,10 @@ unsafe fn on_notify(lp: LPARAM) -> LRESULT {
                     activate(item as usize, false);
                 }
             }
+            LVN_BEGINDRAG => {
+                let pt = (*(lp.0 as *const NMLISTVIEW)).ptAction;
+                begin_drag(hdr.hwndFrom, pt);
+            }
             LVN_COLUMNCLICK => {
                 let col = (*(lp.0 as *const NMLISTVIEW)).iSubItem;
                 if let Some(c) = COLUMNS.get(col as usize) {
@@ -582,10 +644,20 @@ unsafe extern "system" fn list_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
                     clear_filter();
                     return LRESULT(0);
                 }
+                if vk == b'A' as u16 && ctrl_down() {
+                    let all = LVITEMW { state: LVIS_SELECTED, stateMask: LVIS_SELECTED, ..Default::default() };
+                    send(hwnd, LVM_SETITEMSTATE, usize::MAX, &all as *const _ as isize);
+                    return LRESULT(0);
+                }
             }
+            WM_SYSKEYDOWN if wp.0 as u16 == VK_RETURN.0 && GetKeyState(VK_MENU.0 as i32) < 0 => {
+                show_properties(GetParent(hwnd).unwrap_or_default());
+                return LRESULT(0);
+            }
+            WM_SYSCHAR if wp.0 == 0x0D => return LRESULT(0),
             WM_CHAR => {
                 let c = wp.0 as u32;
-                if c == 0x0D || c == 0x08 || c == 0x1B {
+                if c == 0x0D || c == 0x08 || c == 0x1B || c == 0x01 {
                     return LRESULT(0); // handled in WM_KEYDOWN; avoid the beep
                 }
                 if c >= 0x20 && c != 0x7F {
@@ -887,7 +959,7 @@ fn activate(row: usize, locate: bool) {
         navigate(node, None);
     } else {
         let hwnd = with_app(|a| unsafe { GetParent(a.list) }.unwrap_or_default());
-        open_entry(hwnd, node);
+        open_entry(hwnd, node, false);
     }
 }
 
@@ -1036,53 +1108,458 @@ fn selected_rows(list: HWND) -> Vec<usize> {
     }
 }
 
-/// Ctrl+E: the selected rows, or everything in view when nothing is
-/// selected (the current folder, or all filter results).
-fn on_extract(hwnd: HWND) {
+/// The selected rows (never ".."). With `whole_view`, an empty selection
+/// means everything in view: the current folder, or all filter results.
+///
+/// Paths are made relative to the folder being viewed, so items land in
+/// the destination by name. Filter results come from many folders: with
+/// `by_name` each still lands by its own name (dragging), otherwise their
+/// archive paths are kept (Ctrl+E on results).
+fn pick(whole_view: bool, by_name: bool) -> Option<Pick> {
     let list = with_app(|a| a.list);
     let selected = selected_rows(list);
-    let Some((archive, password, ids, base, encrypted)) = with_app(|a| {
-        if a.job.is_some() {
-            return None;
-        }
+    with_app(|a| {
         let arc = a.archive.as_ref()?;
+        let index = &arc.index;
         let filtering = !a.query.is_empty();
         let mut nodes: Vec<NodeId> = selected.iter().filter_map(|&i| a.rows.get(i).copied()).filter(|&n| n != UP).collect();
+        let mut bases = Vec::new();
         if nodes.is_empty() {
-            nodes = if filtering { a.rows.clone() } else { vec![a.folder] };
+            if !whole_view {
+                return None;
+            }
+            if filtering {
+                nodes = a.rows.clone();
+            } else {
+                nodes = vec![a.folder];
+                bases.push(index.path(a.folder));
+            }
+        } else if !filtering {
+            bases.push(index.path(a.folder));
+        }
+        if filtering && by_name {
+            for &n in &nodes {
+                bases.push(index.parent(n).map(|p| index.path(p)).unwrap_or_default());
+            }
         }
         let mut ids = Vec::new();
-        for n in nodes {
-            arc.index.entries_under(n, &mut ids);
+        for &n in &nodes {
+            index.entries_under(n, &mut ids);
         }
         ids.sort_unstable();
         ids.dedup();
-        let base = if filtering { String::new() } else { arc.index.path(a.folder) };
         let entries = arc.reader.entries();
         let encrypted = ids.iter().any(|&id| entries[id as usize].encrypted);
-        Some((arc.path.clone(), arc.password.clone(), ids, base, encrypted))
-    }) else {
-        return;
-    };
-    if ids.is_empty() {
+        Some(Pick { archive: arc.path.clone(), password: arc.password.clone(), nodes, ids, bases, encrypted })
+    })
+}
+
+/// Ctrl+E: the selected rows, or everything in view when nothing is
+/// selected, into a folder chosen by the user.
+fn on_extract(hwnd: HWND) {
+    if with_app(|a| a.job.is_some()) {
         return;
     }
-    let initial = archive.parent().map(Path::to_path_buf).unwrap_or_default();
+    let Some(p) = pick(true, false) else { return };
+    if p.ids.is_empty() {
+        return;
+    }
+    let initial = p.archive.parent().map(Path::to_path_buf).unwrap_or_default();
     ensure_com();
     let Some(dest) = dialogs::pick_folder(hwnd, &initial) else { return };
-    let mut password = password;
-    if encrypted && password.is_none() {
-        let Some(pw) = dialogs::ask_password(hwnd, &file_name(&archive), false) else { return };
+    extract_to(hwnd, p, dest);
+}
+
+/// Asks for the password if needed and starts extracting `p` into `dest`.
+fn extract_to(hwnd: HWND, p: Pick, dest: PathBuf) {
+    if p.ids.is_empty() || with_app(|a| a.job.is_some()) {
+        return;
+    }
+    let mut password = p.password;
+    if p.encrypted && password.is_none() {
+        let Some(pw) = dialogs::ask_password(hwnd, &file_name(&p.archive), false) else { return };
         password = Some(pw);
     }
     start_extract(
         hwnd,
-        ExtractJob { archive, password, ids: Some(ids), base, dest: Dest::Folder(dest), verify: encrypted, open_after: None },
+        ExtractJob {
+            archive: p.archive,
+            password,
+            ids: Some(p.ids),
+            bases: p.bases,
+            dest: Dest::Folder(dest),
+            verify: p.encrypted,
+            open_after: None,
+            open_with: false,
+        },
     );
 }
 
+// --------------------------------------------------------- context menu
+
+/// Right-click, the Menu key or Shift+F10 on the list.
+fn on_context_menu(hwnd: HWND, lp: LPARAM) {
+    let list = with_app(|a| a.list);
+    let mut pt = POINT { x: (lp.0 & 0xFFFF) as i16 as i32, y: ((lp.0 >> 16) & 0xFFFF) as i16 as i32 };
+    if lp.0 == -1 {
+        // From the keyboard: below the focused row.
+        let mut rc = RECT { left: LVIR_LABEL as i32, ..Default::default() };
+        let row = focused_row().unwrap_or(0);
+        if send(list, LVM_GETITEMRECT, row, &mut rc as *mut _ as isize).0 == 0 {
+            rc = RECT::default();
+        }
+        pt = POINT { x: rc.left, y: rc.bottom };
+        unsafe {
+            let _ = ClientToScreen(list, &mut pt);
+        }
+    }
+    let Some((single, is_dir, count, filtering)) = with_app(|a| {
+        let arc = a.archive.as_ref()?;
+        let rows = selected_rows(a.list);
+        let nodes: Vec<NodeId> = rows.iter().filter_map(|&i| a.rows.get(i).copied()).filter(|&n| n != UP).collect();
+        let single = (nodes.len() == 1).then(|| nodes[0]);
+        let is_dir = single.is_some_and(|n| arc.index.is_dir(n));
+        Some((single, is_dir, nodes.len(), !a.query.is_empty()))
+    }) else {
+        return;
+    };
+    let busy = with_app(|a| a.job.is_some());
+    unsafe {
+        let menu = CreatePopupMenu().unwrap_or_default();
+        let add = |id: u32, text: &str, enabled: bool| {
+            let flags = if enabled { MF_STRING } else { MF_STRING | MF_GRAYED };
+            let _ = AppendMenuW(menu, flags, id as usize, &HSTRING::from(text));
+        };
+        let sep = || {
+            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+        };
+        if single.is_some() {
+            add(CM_OPEN, t::CTX_OPEN, !busy || is_dir);
+            if !is_dir {
+                add(CM_OPEN_WITH, t::CTX_OPEN_WITH, !busy);
+            }
+            let _ = SetMenuDefaultItem(menu, CM_OPEN, 0);
+            sep();
+        }
+        let extract_text = if count == 0 { t::CTX_EXTRACT_ALL } else { t::CTX_EXTRACT };
+        add(CM_EXTRACT, extract_text, !busy);
+        add(CM_EXTRACT_NEXT, t::CTX_EXTRACT_NEXT, !busy);
+        if count > 0 {
+            sep();
+            if single.is_some() && filtering {
+                add(CM_LOCATE, t::CTX_LOCATE, true);
+            }
+            add(CM_COPY_PATH, t::CTX_COPY_PATH, true);
+            add(CM_PROPERTIES, t::CTX_PROPERTIES, true);
+        }
+        let cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, None, hwnd, None).0 as u32;
+        let _ = DestroyMenu(menu);
+        match cmd {
+            CM_OPEN => {
+                if let Some(i) = focused_or_selected() {
+                    activate(i, false);
+                }
+            }
+            CM_OPEN_WITH => {
+                if let Some(node) = single {
+                    open_entry(hwnd, node, true);
+                }
+            }
+            CM_EXTRACT => on_extract(hwnd),
+            CM_EXTRACT_NEXT => {
+                if let Some(p) = pick(true, false) {
+                    let dest = p.archive.parent().map(Path::to_path_buf).unwrap_or_default();
+                    extract_to(hwnd, p, dest);
+                }
+            }
+            CM_LOCATE => {
+                if let Some(i) = focused_or_selected() {
+                    activate(i, true);
+                }
+            }
+            CM_COPY_PATH => copy_paths(hwnd),
+            CM_PROPERTIES => show_properties(hwnd),
+            _ => {}
+        }
+    }
+}
+
+/// The focused row if it is selected, else the first selected row.
+fn focused_or_selected() -> Option<usize> {
+    let list = with_app(|a| a.list);
+    let sel = selected_rows(list);
+    match focused_row() {
+        Some(f) if sel.contains(&f) => Some(f),
+        _ => sel.first().copied().or_else(focused_row),
+    }
+}
+
+/// Full paths of the selected rows: "D:\x\fotos.zip\2026\a.jpg".
+fn copy_paths(hwnd: HWND) {
+    let Some(p) = pick(false, false) else { return };
+    let text = with_app(|a| {
+        let arc = a.archive.as_ref()?;
+        let lines: Vec<String> = p
+            .nodes
+            .iter()
+            .map(|&n| format!("{}\\{}", arc.path.display(), arc.index.path(n).replace('/', "\\")))
+            .collect();
+        Some(lines.join("\r\n"))
+    });
+    if let Some(text) = text {
+        if set_clipboard_text(hwnd, &text) {
+            let summary = with_app(|a| a.shown.2.clone());
+            set_status(t::STATUS_PATH_COPIED, &summary);
+        }
+    }
+}
+
+fn set_clipboard_text(hwnd: HWND, text: &str) -> bool {
+    let units: Vec<u16> = text.encode_utf16().chain([0]).collect();
+    unsafe {
+        if OpenClipboard(Some(hwnd)).is_err() {
+            return false;
+        }
+        let _ = EmptyClipboard();
+        let mut ok = false;
+        if let Ok(h) = GlobalAlloc(GMEM_MOVEABLE, units.len() * 2) {
+            let dst = GlobalLock(h) as *mut u16;
+            if !dst.is_null() {
+                std::ptr::copy_nonoverlapping(units.as_ptr(), dst, units.len());
+                let _ = GlobalUnlock(h);
+                // The clipboard owns the memory once this succeeds.
+                ok = SetClipboardData(CF_UNICODETEXT.0 as u32, Some(HANDLE(h.0))).is_ok();
+            }
+        }
+        let _ = CloseClipboard();
+        ok
+    }
+}
+
+/// Alt+Enter: name, sizes, date, CRC and encryption of the selection.
+fn show_properties(hwnd: HWND) {
+    let Some(p) = pick(false, false) else { return };
+    let Some(text) = with_app(|a| {
+        let arc = a.archive.as_ref()?;
+        let index = &arc.index;
+        let entries = arc.reader.entries();
+        let mut size = 0u64;
+        let mut packed = 0u64;
+        let mut unknown = false;
+        let (mut files, mut dirs) = (0usize, 0usize);
+        for &id in &p.ids {
+            let e = &entries[id as usize];
+            match e.kind {
+                EntryKind::Dir => dirs += 1,
+                _ => {
+                    files += 1;
+                    match e.size {
+                        Some(s) => size += s,
+                        None => unknown = true,
+                    }
+                    packed += e.packed.unwrap_or(0);
+                }
+            }
+        }
+        let size_text = if unknown { t::PROP_UNKNOWN.to_string() } else { strings::bytes_exact(size) };
+        let packed_text = format!("{}{}", strings::bytes_exact(packed), strings::ratio(packed, size));
+        let mut lines = Vec::new();
+        if let [node] = p.nodes[..] {
+            let location = index.parent(node).map(|q| index.path(q)).unwrap_or_default().replace('/', "\\");
+            let entry = index.entry(node).map(|id| &entries[id as usize]);
+            let is_dir = index.is_dir(node);
+            let kind = match entry.map(|e| e.kind) {
+                Some(EntryKind::Link) => t::PROP_LINK,
+                _ if is_dir => t::PROP_FOLDER,
+                _ => t::PROP_FILE,
+            };
+            lines.push(format!("{}  {}", t::PROP_NAME, index.name(node)));
+            let mut loc = file_name(&arc.path);
+            if !location.is_empty() {
+                loc = format!("{loc}\\{location}");
+            }
+            lines.push(format!("{}  {loc}", t::PROP_LOCATION));
+            lines.push(format!("{}  {kind}", t::PROP_TYPE));
+            if is_dir {
+                let inner_dirs = dirs.saturating_sub(usize::from(entry.is_some()));
+                lines.push(format!("{}  {}", t::PROP_CONTAINS, strings::items_summary(files, inner_dirs)));
+            }
+            lines.push(String::new());
+            lines.push(format!("{}  {size_text}", t::PROP_SIZE));
+            lines.push(format!("{}  {packed_text}", t::PROP_PACKED));
+            if let Some(e) = entry {
+                lines.push(format!("{}  {}", t::PROP_MODIFIED, format::date(e.modified)));
+                if let Some(crc) = e.crc {
+                    lines.push(format!("CRC32:  {crc:08X}"));
+                }
+                lines.push(format!("{}  {}", t::PROP_ENCRYPTED, if e.encrypted { t::YES } else { t::NO }));
+            }
+        } else {
+            lines.push(format!("{}  {}", t::PROP_SELECTION, strings::selection_count(p.nodes.len())));
+            lines.push(format!("{}  {}", t::PROP_CONTAINS, strings::items_summary(files, dirs)));
+            lines.push(String::new());
+            lines.push(format!("{}  {size_text}", t::PROP_SIZE));
+            lines.push(format!("{}  {packed_text}", t::PROP_PACKED));
+            if p.encrypted {
+                lines.push(format!("{}  {}", t::PROP_ENCRYPTED, t::YES));
+            }
+        }
+        Some(lines.join("\n"))
+    }) else {
+        return;
+    };
+    dialogs::message(hwnd, t::PROP_TITLE, &text, MB_ICONINFORMATION);
+}
+
+// ------------------------------------------------------------- drag out
+
+/// LVN_BEGINDRAG: drag the selected rows out of the window.
+fn begin_drag(list: HWND, pt: POINT) {
+    if with_app(|a| a.job.is_some() || a.drop_wait.is_some()) {
+        return;
+    }
+    let Some(p) = pick(false, true) else { return };
+    if p.ids.is_empty() {
+        return;
+    }
+    let hwnd = unsafe { GetParent(list) }.unwrap_or_default();
+    ensure_com();
+    let Some(watch) = drag::Watch::start(hwnd) else { return };
+    let marker = watch.marker().to_path_buf();
+    // The shell may copy the marker before the drag loop returns, so the
+    // watch must be in place (and its result kept) during the drag.
+    with_app(|a| {
+        a.drop_wait = Some((watch, p.clone()));
+        a.dragging = true;
+        a.drop_found = None;
+    });
+    // For a program other than the shell: extract to temporary files when
+    // the button is released over it.
+    let mut once = Some(p);
+    let extract_now = Box::new(move || once.take().and_then(|p| extract_for_drop(hwnd, p)));
+    let outcome = drag::run(hwnd, list, pt, &marker, extract_now);
+    let found = with_app(|a| {
+        a.dragging = false;
+        a.drop_found.take()
+    });
+    match (outcome, found) {
+        (drag::Outcome::Shell, Some(folder)) => drop_into(hwnd, folder),
+        (drag::Outcome::Shell, None) => unsafe {
+            SetTimer(Some(hwnd), TIMER_DROP, DROP_WAIT_MS, None);
+        },
+        _ => with_app(|a| a.drop_wait = None),
+    }
+}
+
+/// The shell reported a change: is it our marker landing in a folder?
+fn on_shell_notify(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
+    let folder = with_app(|a| a.drop_wait.as_ref().and_then(|(w, _)| w.check(wp, lp)));
+    let Some(folder) = folder else { return };
+    if with_app(|a| a.dragging) {
+        // Still inside the drag loop: handled when it returns.
+        with_app(|a| a.drop_found = Some(folder));
+        return;
+    }
+    drop_into(hwnd, folder);
+}
+
+/// Extracts the dragged entries into the folder the shell dropped them on.
+fn drop_into(hwnd: HWND, folder: PathBuf) {
+    unsafe {
+        let _ = KillTimer(Some(hwnd), TIMER_DROP);
+    }
+    let Some((watch, p)) = with_app(|a| a.drop_wait.take()) else { return };
+    drop(watch);
+    timing::mark("drop", &folder.display().to_string());
+    extract_to(hwnd, p, folder);
+}
+
+/// Extracts the dragged entries to a temporary folder while the drop is in
+/// progress (a modal wait with the progress window) and returns the paths
+/// of the dragged items there.
+fn extract_for_drop(hwnd: HWND, p: Pick) -> Option<Vec<PathBuf>> {
+    let mut password = p.password.clone();
+    if p.encrypted && password.is_none() {
+        password = Some(dialogs::ask_password(hwnd, &file_name(&p.archive), false)?);
+    }
+    let slot = temp::new_slot().ok()?;
+    let names: Vec<String> = with_app(|a| {
+        let arc = a.archive.as_ref()?;
+        Some(p.nodes.iter().map(|&n| arc.index.name(n).to_string()).collect())
+    })?;
+    with_app(|a| {
+        a.blocking = true;
+        a.blocking_done = None;
+    });
+    start_extract(
+        hwnd,
+        ExtractJob {
+            archive: p.archive.clone(),
+            password,
+            ids: Some(p.ids),
+            bases: p.bases,
+            dest: Dest::Folder(slot.clone()),
+            verify: p.encrypted,
+            open_after: None,
+            open_with: false,
+        },
+    );
+    let done = unsafe { wait_blocking() };
+    with_app(|a| a.blocking = false);
+    let done = done?;
+    match &done.result {
+        Ok(report) => dialogs::show_blocked(hwnd, report),
+        Err(Error::Cancelled) => {
+            refresh_status();
+            return None;
+        }
+        Err(e) => {
+            refresh_status();
+            dialogs::message(hwnd, t::EXTRACT_ERROR_TITLE, &strings::error_message(e), MB_ICONERROR);
+            return None;
+        }
+    }
+    refresh_status();
+    let files: Vec<PathBuf> = names
+        .iter()
+        .filter_map(|n| kibotos_core::safety::safe_join(&slot, n).ok())
+        .filter(|f| f.exists())
+        .collect();
+    (!files.is_empty()).then_some(files)
+}
+
+/// Pumps messages until the blocking extraction reports back. Esc cancels
+/// (the mouse is still captured by the drag, so the button may not work).
+unsafe fn wait_blocking() -> Option<ExtractDone> {
+    let mut msg = MSG::default();
+    loop {
+        if let Some(done) = with_app(|a| a.blocking_done.take()) {
+            return Some(done);
+        }
+        unsafe {
+            if !GetMessageW(&mut msg, None, 0, 0).as_bool() {
+                PostQuitMessage(msg.wParam.0 as i32);
+                return None;
+            }
+            if msg.message == WM_KEYDOWN && msg.wParam.0 as u16 == VK_ESCAPE.0 {
+                if let Some(ctl) = with_app(|a| a.job.clone()) {
+                    ctl.cancel();
+                }
+                continue;
+            }
+            if let Some(p) = progress::current() {
+                if IsDialogMessageW(p, &msg).as_bool() {
+                    continue;
+                }
+            }
+            let _ = TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+}
+
 /// Extracts one file to a fresh temporary folder and opens it.
-fn open_entry(hwnd: HWND, node: NodeId) {
+fn open_entry(hwnd: HWND, node: NodeId, with: bool) {
     let Some((archive, password, id, path, encrypted)) = with_app(|a| {
         if a.job.is_some() {
             return None;
@@ -1116,15 +1593,16 @@ fn open_entry(hwnd: HWND, node: NodeId) {
             archive,
             password,
             ids: Some(vec![id]),
-            base: base.to_string(),
+            bases: vec![base.to_string()],
             dest: Dest::Folder(slot),
             verify: encrypted,
             open_after: Some(target.unwrap_or_default()),
+            open_with: with,
         },
     );
 }
 
-fn shell_open(hwnd: HWND, file: &Path) {
+fn shell_open(hwnd: HWND, file: &Path, with: bool) {
     ensure_com();
     let path = HSTRING::from(file.as_os_str());
     let dir = HSTRING::from(file.parent().unwrap_or(file).as_os_str());
@@ -1134,6 +1612,7 @@ fn shell_open(hwnd: HWND, file: &Path) {
         lpFile: PCWSTR(path.as_ptr()),
         lpDirectory: PCWSTR(dir.as_ptr()),
         nShow: SW_SHOWNORMAL.0,
+        lpVerb: if with { w!("openas") } else { PCWSTR::null() },
         ..Default::default()
     };
     // Without a registered program Windows shows its "Open with" dialog.
@@ -1215,9 +1694,14 @@ fn start_extract(hwnd: HWND, job: ExtractJob) {
 }
 
 unsafe fn on_extracted(hwnd: HWND, lp: LPARAM) {
-    let ExtractDone { mut job, dest, result, secs } = unsafe { job::take_done(lp) };
+    let done = unsafe { job::take_done(lp) };
     progress::close();
     with_app(|a| a.job = None);
+    if with_app(|a| a.blocking) {
+        with_app(|a| a.blocking_done = Some(done));
+        return;
+    }
+    let ExtractDone { mut job, dest, result, secs } = done;
     timing::mark("extract", &format!("{} in {secs:.2} s", dest.display()));
     if with_app(|a| std::mem::take(&mut a.close_pending)) {
         let _ = unsafe { PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0)) };
@@ -1230,7 +1714,7 @@ unsafe fn on_extracted(hwnd: HWND, lp: LPARAM) {
                 Some(target) if report.files > 0 && target.is_file() => {
                     temp::track(target, &job.archive);
                     set_status(&strings::opened(&file_name(target)), &summary);
-                    shell_open(hwnd, target);
+                    shell_open(hwnd, target, job.open_with);
                 }
                 Some(_) => refresh_status(),
                 None => {

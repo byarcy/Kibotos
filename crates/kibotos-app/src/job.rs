@@ -49,13 +49,16 @@ pub struct ExtractJob {
     pub password: Option<String>,
     /// `None` extracts everything.
     pub ids: Option<Vec<EntryId>>,
-    /// Archive folder stripped from paths ("" keeps full paths).
-    pub base: String,
+    /// Archive folders stripped from paths, so selected items land by
+    /// name (empty keeps full paths). See `DiskSink::bases`.
+    pub bases: Vec<String>,
     pub dest: Dest,
     /// Check the password on one small encrypted entry before writing.
     pub verify: bool,
     /// Open this extracted file afterwards (double-click on a file).
     pub open_after: Option<PathBuf>,
+    /// With `open_after`: show Windows' "Open with" list instead.
+    pub open_with: bool,
 }
 
 pub struct ExtractDone {
@@ -225,7 +228,7 @@ pub fn spawn(target: HWND, job: ExtractJob, ctl: Arc<Control>) {
             // risky types when extracting in bulk.
             let policy = if job.open_after.is_some() { ZonePolicy::All } else { ZonePolicy::Risky };
             let zone = kibotos_core::zone::read(&job.archive).map(|data| Zone { data, policy });
-            let mut sink = DiskSink::new(&dest).base(&job.base).overwrite(Overwrite::Ask).on_conflict(ask).zone(zone);
+            let mut sink = DiskSink::new(&dest).bases(&job.bases).overwrite(Overwrite::Ask).on_conflict(ask).zone(zone);
             let extracted = reader.extract(ids, &mut sink, &ctl);
             let closed = sink.close();
             extracted?;

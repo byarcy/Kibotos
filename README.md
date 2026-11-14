@@ -2,7 +2,7 @@
 
 A fast, lightweight archive manager for Windows, written in Rust.
 
-Status: **v0.1 in progress — step 7 of 8** (main window, context-menu modes and Windows integration).
+Status: **v0.1 in progress — step 8 of 10** (main window, context-menu modes, Windows integration, in-app context menu and drag-out extraction).
 
 ## Layout
 
@@ -30,6 +30,18 @@ Set `KIBOTOS_TIMING=<file>` to log startup timings (milliseconds since process c
 | Ctrl+E | Extract the selection, or the whole folder / filter result if nothing is selected |
 | Esc | Clear the filter; cancel an extraction in the progress window |
 | Ctrl+O | Open an archive |
+| Ctrl+A | Select all rows |
+| Alt+Enter | Properties of the selection (sizes, ratio, date, CRC, encryption) |
+| Menu key, Shift+F10, right-click | Context menu: Abrir, Abrir con..., Extraer..., Extraer junto al comprimido, Mostrar en su carpeta, Copiar ruta, Propiedades |
+
+## Drag and drop
+
+Drop an archive on the window to open it. Drag rows out of the list to extract them:
+
+- **To Explorer, the desktop or a file dialog**, the files are extracted **straight into the folder you drop on** (also a subfolder icon or a navigation-pane item), written once, with Kibotós' own progress, overwrite questions and safety checks. Windows does not tell a drag source where it was dropped, so the drag carries a tiny hidden marker file; when the shell copies it, its change notification reveals the exact folder, and Kibotós deletes the marker and extracts there.
+- **To any other program** (mail, editors, other file managers), the rows are extracted to the temporary folder when the mouse button is released, and the program receives those files — what other archivers do for every target.
+
+Esc cancels the drag.
 
 ## Command-line modes
 

@@ -201,10 +201,11 @@ fn extract_one(target: HWND, mode: Mode, archive: &Path) -> i32 {
             archive: archive.to_path_buf(),
             password: password.clone(),
             ids: None,
-            base: String::new(),
+            bases: Vec::new(),
             dest: dest.clone(),
             verify: true,
             open_after: None,
+            open_with: false,
         };
         let ctl = Arc::new(Control::new());
         let title = format!("{} {name}", t::PROGRESS_EXTRACTING);

@@ -479,6 +479,28 @@ fn extract_folder_relative_to_base() {
     assert!(!dest.join("docs").exists());
 }
 
+#[test]
+fn extract_items_from_several_folders_by_name() {
+    // Filter results from different folders, dragged out together.
+    let dir = TempDir::new().unwrap();
+    let p = dir.path().join("a.zip");
+    make_zip(&p, None);
+    let mut r = open(&p);
+    let index = ArchiveIndex::build(r.entries());
+    let mut ids = Vec::new();
+    for path in ["docs/sub/data.bin", "docs/readme.md", "ñandú/日本.txt"] {
+        index.entries_under(index.find(path).unwrap(), &mut ids);
+    }
+    let dest = dir.path().join("out");
+    let mut sink = DiskSink::new(&dest).bases(["docs/sub", "docs", "ñandú"]);
+    r.extract(&ids, &mut sink, &Control::new()).unwrap();
+    sink.close().unwrap();
+    for name in ["data.bin", "readme.md", "日本.txt"] {
+        assert!(dest.join(name).is_file(), "{name}");
+    }
+    assert!(!dest.join("docs").exists());
+}
+
 // ---------------------------------------------------------------- limits
 
 #[test]

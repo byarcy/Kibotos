@@ -4,6 +4,7 @@
 
 mod cli;
 mod dialogs;
+mod drag;
 mod format;
 mod icons;
 mod integrate;

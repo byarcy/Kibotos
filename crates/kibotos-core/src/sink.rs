@@ -107,7 +107,8 @@ enum Current {
 /// any write error.
 pub struct DiskSink {
     dest: PathBuf,
-    base: String,
+    /// Archive folders stripped from entry paths, longest first.
+    bases: Vec<String>,
     overwrite: Overwrite,
     on_conflict: Option<ConflictFn>,
     created: HashSet<PathBuf>,
@@ -126,7 +127,7 @@ impl DiskSink {
         let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(2, 8);
         DiskSink {
             dest: dest.into(),
-            base: String::new(),
+            bases: Vec::new(),
             overwrite: Overwrite::Always,
             on_conflict: None,
             created: HashSet::new(),
@@ -165,9 +166,22 @@ impl DiskSink {
 
     /// Strips this archive folder (e.g. `"docs/2026"`) from entry paths, so
     /// extracting from inside a folder does not recreate its parents.
-    pub fn base(mut self, folder: &str) -> Self {
-        let f = folder.trim_matches('/');
-        self.base = if f.is_empty() { String::new() } else { format!("{f}/") };
+    pub fn base(self, folder: &str) -> Self {
+        self.bases([folder])
+    }
+
+    /// Like [`DiskSink::base`] for a selection taken from several folders
+    /// (filter results): each entry loses the longest base it starts with,
+    /// so every selected item lands in the destination by its own name.
+    pub fn bases<S: AsRef<str>>(mut self, folders: impl IntoIterator<Item = S>) -> Self {
+        self.bases = folders
+            .into_iter()
+            .map(|f| f.as_ref().trim_matches('/').to_string())
+            .filter(|f| !f.is_empty())
+            .map(|f| format!("{f}/"))
+            .collect();
+        self.bases.sort_by_key(|b| std::cmp::Reverse(b.len()));
+        self.bases.dedup();
         self
     }
 
@@ -239,7 +253,8 @@ impl ExtractSink for DiskSink {
         if let Some(pool) = &self.pool {
             pool.check()?;
         }
-        let rel = entry.path.strip_prefix(self.base.as_str()).unwrap_or(&entry.path);
+        let path: &str = &entry.path;
+        let rel = self.bases.iter().find_map(|b| path.strip_prefix(b.as_str())).unwrap_or(path);
         let target = match safe_join(&self.dest, rel) {
             Ok(p) => p,
             Err(r) => return self.skip(entry, SkipReason::Unsafe(r)),
