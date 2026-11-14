@@ -8,6 +8,7 @@ pub mod es {
 
     pub const MENU_FILE: &str = "&Archivo";
     pub const MENU_OPEN: &str = "&Abrir...\tCtrl+O";
+    pub const MENU_EXTRACT: &str = "&Extraer...\tCtrl+E";
     pub const MENU_EXIT: &str = "&Salir";
     pub const MENU_HELP: &str = "Ay&uda";
     pub const MENU_ABOUT: &str = "&Acerca de Kibotós";
@@ -31,6 +32,38 @@ pub mod es {
     pub const ABOUT_TITLE: &str = "Acerca de Kibotós";
     pub const ABOUT_TAGLINE: &str = "Gestor de archivos comprimidos rápido y ligero.";
     pub const SIGNATURE: &str = "byarcy 2026";
+
+    pub const OK: &str = "Aceptar";
+    pub const CANCEL: &str = "Cancelar";
+
+    pub const PICK_DEST_TITLE: &str = "Elige la carpeta de destino";
+    pub const PICK_DEST_OK: &str = "Extraer aquí";
+
+    pub const PROGRESS_EXTRACTING: &str = "Extrayendo";
+    pub const PROGRESS_PREPARING: &str = "Preparando...";
+    pub const PROGRESS_CANCELLING: &str = "Cancelando...";
+
+    pub const PASSWORD_TITLE: &str = "Contraseña";
+    pub const PASSWORD_PROMPT: &str = "está protegido con contraseña. Escríbela para continuar:";
+    pub const PASSWORD_WRONG: &str = "La contraseña no es correcta. Inténtalo de nuevo:";
+
+    pub const CONFLICT_TITLE: &str = "El archivo ya existe";
+    pub const CONFLICT_REPLACE: &str = "&Reemplazar";
+    pub const CONFLICT_SKIP: &str = "&Omitir";
+    pub const CONFLICT_ALL: &str = "Hacer lo mismo con los demás conflictos";
+    pub const CONFLICT_EXISTING: &str = "Existente:";
+    pub const CONFLICT_NEW: &str = "Nuevo:";
+
+    pub const EXTRACT_ERROR_TITLE: &str = "No se pudo extraer";
+    pub const EXTRACT_CANCELLED: &str = "Extracción cancelada.";
+    pub const BLOCKED_TITLE: &str = "Elementos omitidos por seguridad";
+    pub const BLOCKED_INTRO: &str = "Estos elementos no se extrajeron porque podrían escribir fuera de la carpeta de destino o no son archivos normales:";
+    pub const BLOCKED_MORE: &str = "y otros";
+    pub const REASON_TRAVERSAL: &str = "sale de la carpeta (..)";
+    pub const REASON_ABSOLUTE: &str = "ruta absoluta";
+    pub const REASON_RESERVED: &str = "nombre reservado de Windows";
+    pub const REASON_EMPTY: &str = "nombre vacío";
+    pub const REASON_LINK: &str = "enlace simbólico";
 
     pub const ERR_UNKNOWN_FORMAT: &str = "El archivo no es un formato comprimido compatible.";
     pub const ERR_CORRUPT: &str = "El archivo está dañado o incompleto.";
@@ -76,6 +109,58 @@ pub fn matches(n: usize, query: &str) -> String {
     format!("{} {word} de «{query}»", number(n as u64))
 }
 
+/// "12,3 MB" style sizes for progress and summaries.
+pub fn bytes(n: u64) -> String {
+    const UNITS: [&str; 5] = ["bytes", "KB", "MB", "GB", "TB"];
+    if n < 1024 {
+        return format!("{n} bytes");
+    }
+    let mut v = n as f64;
+    let mut u = 0;
+    while v >= 1024.0 && u < UNITS.len() - 1 {
+        v /= 1024.0;
+        u += 1;
+    }
+    format!("{:.1} {}", v, UNITS[u]).replace('.', ",")
+}
+
+pub fn progress_detail(files_done: u64, files_total: u64, bytes_done: u64, bytes_total: u64, rate: f64) -> String {
+    format!(
+        "{} de {} archivos  ·  {} de {}  ·  {}/s",
+        number(files_done),
+        number(files_total),
+        bytes(bytes_done),
+        bytes(bytes_total),
+        bytes(rate as u64)
+    )
+}
+
+pub fn extracted(files: u64, total: u64, secs: f64, dest: &str) -> String {
+    let f = if files == 1 { "archivo" } else { "archivos" };
+    let secs = format!("{secs:.1}").replace('.', ",");
+    format!("Extraídos {} {f} ({}) en {secs} s  →  {dest}", number(files), bytes(total))
+}
+
+pub fn conflict_question(name: &str) -> String {
+    format!("Ya existe «{name}» en la carpeta de destino.")
+}
+
+pub fn password_prompt(archive: &str, wrong: bool) -> String {
+    if wrong { t::PASSWORD_WRONG.to_string() } else { format!("«{archive}» {}", t::PASSWORD_PROMPT) }
+}
+
+pub fn blocked_reason(r: &kibotos_core::SkipReason) -> &'static str {
+    use kibotos_core::{SkipReason, UnsafeReason};
+    match r {
+        SkipReason::Unsafe(UnsafeReason::Traversal) => t::REASON_TRAVERSAL,
+        SkipReason::Unsafe(UnsafeReason::Absolute) => t::REASON_ABSOLUTE,
+        SkipReason::Unsafe(UnsafeReason::ReservedName) => t::REASON_RESERVED,
+        SkipReason::Unsafe(UnsafeReason::Empty) => t::REASON_EMPTY,
+        SkipReason::Link => t::REASON_LINK,
+        SkipReason::Exists => "",
+    }
+}
+
 pub fn opened_in(format: &str, entries: usize, ms: f64) -> String {
     format!("{format} · {} elementos · abierto en {ms:.0} ms", number(entries as u64))
 }
@@ -119,6 +204,13 @@ mod tests {
         assert_eq!(number(999), "999");
         assert_eq!(number(1000), "1.000");
         assert_eq!(number(1234567), "1.234.567");
+    }
+
+    #[test]
+    fn byte_sizes() {
+        assert_eq!(bytes(512), "512 bytes");
+        assert_eq!(bytes(1536), "1,5 KB");
+        assert_eq!(bytes(5 * 1024 * 1024), "5,0 MB");
     }
 
     #[test]

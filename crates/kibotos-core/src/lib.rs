@@ -32,7 +32,7 @@ pub use entry::{Entry, EntryId, EntryKind, Timestamp};
 pub use error::{Error, LimitKind, Result};
 pub use index::{ArchiveIndex, NodeId};
 pub use safety::UnsafeReason;
-pub use sink::{DiskSink, ExtractReport, ExtractSink, MemorySink, Overwrite, SkipReason, Skipped};
+pub use sink::{Conflict, ConflictFn, DiskSink, ExtractReport, ExtractSink, MemorySink, Overwrite, SkipReason, Skipped};
 
 /// Options used when opening an archive.
 #[derive(Clone, Debug, Default)]

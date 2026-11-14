@@ -2,7 +2,7 @@
 
 A fast, lightweight archive manager for Windows, written in Rust.
 
-Status: **v0.1 in progress — step 3 of 8** (core library, console tool, main window with navigation, sorting and filter).
+Status: **v0.1 in progress — step 4 of 8** (browse, filter and extract archives from the main window).
 
 ## Layout
 
@@ -24,7 +24,8 @@ Set `KIBOTOS_TIMING=<file>` to log startup timings (milliseconds since process c
 | Enter / double-click | Open folder (on a filter result: show it in its folder) |
 | Backspace / Alt+Up | Up one folder (or leave the filter) |
 | Typing in the list, Ctrl+F | Filter names across the whole archive |
-| Esc | Clear the filter |
+| Ctrl+E | Extract the selection, or the whole folder / filter result if nothing is selected |
+| Esc | Clear the filter; cancel an extraction in the progress window |
 | Ctrl+O | Open an archive |
 
 ## Formats (read and extract)

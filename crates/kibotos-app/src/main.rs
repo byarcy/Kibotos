@@ -2,8 +2,10 @@
 
 #![windows_subsystem = "windows"]
 
+mod dialogs;
 mod format;
 mod icons;
+mod progress;
 mod strings;
 mod timing;
 mod window;

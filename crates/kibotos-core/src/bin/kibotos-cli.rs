@@ -14,13 +14,14 @@ kibotos-cli - Kibotos core test tool
 
 USAGE:
   kibotos-cli list    <archive> [-p PASSWORD] [-q] [--filter TEXT]
-  kibotos-cli extract <archive> <dest> [-p PASSWORD] [--only PATH]... [--keep]
+  kibotos-cli extract <archive> <dest> [-p PASSWORD] [--only PATH]... [--keep] [--threads N]
   kibotos-cli gen-zip <out.zip> <entries>
 
   -q          print only timings, not the entries
   --filter    time a whole-archive name search, as the UI filter does
   --only      extract only this file or folder (repeatable)
   --keep      do not overwrite existing files
+  --threads N writer threads for small files (0 = write on the extraction thread)
   gen-zip     write a test ZIP with <entries> small stored files
 ";
 
@@ -55,10 +56,11 @@ struct Common {
     filter: Option<String>,
     only: Vec<String>,
     keep: bool,
+    threads: Option<usize>,
 }
 
 fn parse(args: &[String]) -> Result<Common, String> {
-    let mut c = Common { positional: vec![], password: None, quiet: false, filter: None, only: vec![], keep: false };
+    let mut c = Common { positional: vec![], password: None, quiet: false, filter: None, only: vec![], keep: false, threads: None };
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -67,6 +69,9 @@ fn parse(args: &[String]) -> Result<Common, String> {
             "--filter" => c.filter = Some(it.next().ok_or("--filter needs a value")?.clone()),
             "--only" => c.only.push(it.next().ok_or("--only needs a value")?.clone()),
             "--keep" => c.keep = true,
+            "--threads" => {
+                c.threads = Some(it.next().ok_or("--threads needs a value")?.parse().map_err(|_| "--threads needs a number")?)
+            }
             _ => c.positional.push(a.clone()),
         }
     }
@@ -183,12 +188,17 @@ fn cmd_extract(args: &[String]) -> Result<(), String> {
     };
 
     let mut sink = DiskSink::new(PathBuf::from(dest)).overwrite(if c.keep { Overwrite::Never } else { Overwrite::Always });
+    if let Some(n) = c.threads {
+        sink = sink.writer_threads(n);
+    }
     let ctl = Control::new();
     let t = Instant::now();
     let res = reader.extract(&ids, &mut sink, &ctl);
+    let closed = sink.close();
     let t_extract = t.elapsed();
-
-    let r = &sink.report;
+    let res = res.and(closed.as_ref().map(|_| ()).map_err(|e| kibotos_core::Error::Corrupt(e.to_string())));
+    let report = closed.unwrap_or_default();
+    let r = &report;
     for s in &r.skipped {
         eprintln!("skipped  {}  ({:?})", s.path, s.reason);
     }

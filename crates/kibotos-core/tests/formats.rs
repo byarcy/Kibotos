@@ -7,7 +7,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use kibotos_core::{
-    ArchiveIndex, ArchiveReader, Codec, Control, DiskSink, EntryKind, Error, Format, LimitKind, Limits, MemorySink,
+    ArchiveIndex, ArchiveReader, Codec, Conflict, Control, DiskSink, EntryKind, Error, Format, LimitKind, Limits, MemorySink,
     OpenOptions, Overwrite, SkipReason, UnsafeReason,
 };
 use tempfile::TempDir;
@@ -354,10 +354,12 @@ fn unsafe_paths_are_blocked() {
     let mut r = open(&p);
     let mut sink = DiskSink::new(&dest);
     r.extract_all(&mut sink, &Control::new()).unwrap();
+    let report = sink.close().unwrap();
 
     assert_eq!(std::fs::read(dest.join("ok/fine.txt")).unwrap(), b"x");
-    assert_eq!(sink.report.files, 1);
-    let reasons: HashMap<_, _> = sink.report.skipped.iter().map(|s| (s.path.as_str(), s.reason.clone())).collect();
+    assert_eq!(report.files, 1);
+    assert_eq!(report.blocked().count(), 6);
+    let reasons: HashMap<_, _> = report.skipped.iter().map(|s| (s.path.as_str(), s.reason.clone())).collect();
     assert_eq!(reasons["../escape.txt"], SkipReason::Unsafe(UnsafeReason::Traversal));
     assert_eq!(reasons["/abs.txt"], SkipReason::Unsafe(UnsafeReason::Absolute));
     assert_eq!(reasons["C:/Windows/evil.txt"], SkipReason::Unsafe(UnsafeReason::Absolute));
@@ -378,6 +380,7 @@ fn disk_sink_writes_tree_and_respects_overwrite() {
     let mut r = open(&p);
     let mut sink = DiskSink::new(&dest);
     r.extract_all(&mut sink, &Control::new()).unwrap();
+    sink.close().unwrap();
     for (name, data) in sample() {
         assert_eq!(std::fs::read(dest.join(name)).unwrap(), data, "{name}");
     }
@@ -385,8 +388,78 @@ fn disk_sink_writes_tree_and_respects_overwrite() {
     std::fs::write(dest.join("hello.txt"), b"mine").unwrap();
     let mut sink = DiskSink::new(&dest).overwrite(Overwrite::Never);
     r.extract_all(&mut sink, &Control::new()).unwrap();
+    let report = sink.close().unwrap();
     assert_eq!(std::fs::read(dest.join("hello.txt")).unwrap(), b"mine");
-    assert!(sink.report.skipped.iter().any(|s| s.reason == SkipReason::Exists));
+    assert!(report.skipped.iter().any(|s| s.reason == SkipReason::Exists));
+    assert_eq!(report.blocked().count(), 0);
+}
+
+#[test]
+fn conflict_callback_decides() {
+    let dir = TempDir::new().unwrap();
+    let p = dir.path().join("a.zip");
+    make_zip(&p, None);
+    let dest = dir.path().join("out");
+    let mut r = open(&p);
+    let mut first = DiskSink::new(&dest);
+    r.extract_all(&mut first, &Control::new()).unwrap();
+    first.close().unwrap();
+    for (name, _) in sample() {
+        std::fs::write(dest.join(name), b"old").unwrap();
+    }
+
+    // Replace the first conflict, then skip all the others.
+    let mut asked = 0;
+    let answers = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = answers.clone();
+    let sink = DiskSink::new(&dest).overwrite(Overwrite::Ask).on_conflict(Box::new(move |path, _| {
+        seen.lock().unwrap().push(path.to_path_buf());
+        asked += 1;
+        if asked == 1 { Conflict::Replace } else { Conflict::SkipAll }
+    }));
+    let mut sink = sink;
+    r.extract_all(&mut sink, &Control::new()).unwrap();
+    let report = sink.close().unwrap();
+    assert_eq!(answers.lock().unwrap().len(), 2, "asked once, then 'skip all'");
+    assert_eq!(report.files, 1);
+    let replaced = answers.lock().unwrap()[0].clone();
+    assert_ne!(std::fs::read(&replaced).unwrap(), b"old");
+
+    // Cancel stops the extraction.
+    let mut sink = DiskSink::new(&dest).overwrite(Overwrite::Ask).on_conflict(Box::new(|_, _| Conflict::Cancel));
+    let err = r.extract_all(&mut sink, &Control::new()).unwrap_err();
+    assert!(matches!(err, Error::Cancelled));
+}
+
+#[test]
+fn many_small_files_through_writer_pool() {
+    let dir = TempDir::new().unwrap();
+    let p = dir.path().join("many.zip");
+    let mut z = zip::ZipWriter::new(File::create(&p).unwrap());
+    let o = zip::write::SimpleFileOptions::default();
+    for i in 0..500 {
+        z.start_file(format!("d{}/f{i}.txt", i % 7), o).unwrap();
+        z.write_all(format!("file {i}").as_bytes()).unwrap();
+    }
+    // The same path twice (written with different separators, which the
+    // zip writer accepts): the later entry must win with parallel writes.
+    for (name, v) in [("x/dup.txt", "first"), (r"x\dup.txt", "second")] {
+        z.start_file(name, o).unwrap();
+        z.write_all(v.as_bytes()).unwrap();
+    }
+    z.finish().unwrap();
+
+    let mut r = open(&p);
+    let dest = dir.path().join("out");
+    let mut sink = DiskSink::new(&dest).writer_threads(4);
+    r.extract_all(&mut sink, &Control::new()).unwrap();
+    let report = sink.close().unwrap();
+    assert_eq!(report.files, 502);
+    for i in [0, 123, 499] {
+        let got = std::fs::read_to_string(dest.join(format!("d{}/f{i}.txt", i % 7))).unwrap();
+        assert_eq!(got, format!("file {i}"));
+    }
+    assert_eq!(std::fs::read_to_string(dest.join("x/dup.txt")).unwrap(), "second");
 }
 
 #[test]
@@ -401,6 +474,7 @@ fn extract_folder_relative_to_base() {
     let dest = dir.path().join("out");
     let mut sink = DiskSink::new(&dest).base("docs");
     r.extract(&ids, &mut sink, &Control::new()).unwrap();
+    sink.close().unwrap();
     assert!(dest.join("sub/data.bin").exists());
     assert!(!dest.join("docs").exists());
 }
