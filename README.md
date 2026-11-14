@@ -23,7 +23,7 @@ Set `KIBOTOS_TIMING=<file>` to log startup timings (milliseconds since process c
 
 Without an argument the window starts in **Este equipo** (Desktop, Downloads, Documents and the drives). Folders open in the window, archives open inside Kibotós and other files open with their program. Backspace at an archive's root returns to the folder that holds it, and keeps going up to the drive and *Este equipo*. The filter applies to the current folder on disk and to the whole archive inside one. Folder listings are read on a worker thread; hidden and system files are not shown.
 
-The path bar (Ctrl+L or Alt+D) accepts a folder, an archive, or a folder inside an archive, such as `D:\Descargasotos.zip6`. On disk, the context menu offers *Extraer aquí*, *Extraer en «nombre\»* and *Extraer...* for one or several archives (extracted one after another), *Mostrar en el Explorador*, *Copiar ruta* and the shell's *Propiedades*. The disk view never moves, renames or deletes files: dragging files out of it copies them.
+The path bar (Ctrl+L or Alt+D) accepts a folder, an archive, or a folder inside an archive, such as `D:\Descargas\fotos.zip\2026`. On disk, the context menu offers *Extraer aquí*, *Extraer en «nombre\»* and *Extraer...* for one or several archives (extracted one after another), *Mostrar en el Explorador*, *Copiar ruta* and the shell's *Propiedades*. The disk view never moves, renames or deletes files: dragging files out of it copies them.
 
 ## Keyboard
 
