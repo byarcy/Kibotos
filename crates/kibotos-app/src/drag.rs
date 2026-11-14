@@ -43,7 +43,7 @@ use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::{
     CFSTR_PREFERREDDROPEFFECT, CLSID_DragDropHelper, CSIDL_DESKTOP, DROPFILES, IDragSourceHelper, ILFree,
-    SHCNE_CREATE, SHCNE_DELETE, SHCNE_RENAMEITEM, SHCNE_UPDATEDIR, SHCNE_UPDATEITEM, SHCNF_PATHW, SHCNRF_NewDelivery,
+    SHCNE_CREATE, SHCNE_DELETE, SHCNE_RENAMEITEM, SHCNE_UPDATEDIR, SHCNE_UPDATEITEM, SHCNF_FLUSHNOWAIT, SHCNF_PATHW, SHCNRF_NewDelivery,
     SHCNRF_ShellLevel, SHChangeNotification_Lock, SHChangeNotification_Unlock, SHChangeNotify, SHChangeNotifyDeregister,
     SHChangeNotifyEntry, SHChangeNotifyRegister, SHCreateDataObject, SHGetPathFromIDListW, SHGetSpecialFolderLocation,
 };
@@ -341,6 +341,20 @@ impl Drop for Watch {
             }
         }
         let _ = std::fs::remove_file(&self.marker.path);
+    }
+}
+
+/// Tells the shell that `dir` and its parent changed, so open Explorer
+/// windows list the extracted items now. Explorer does not always notice
+/// files written by another process on its own (after a drop it can keep
+/// showing the folder as empty for many seconds).
+pub fn shell_refresh(dir: &Path) {
+    for d in [Some(dir), dir.parent()].into_iter().flatten() {
+        if !d.is_dir() {
+            continue;
+        }
+        let w: Vec<u16> = wide_path(d).into_iter().chain([0]).collect();
+        unsafe { SHChangeNotify(SHCNE_UPDATEDIR, SHCNF_PATHW | SHCNF_FLUSHNOWAIT, Some(w.as_ptr() as _), None) };
     }
 }
 

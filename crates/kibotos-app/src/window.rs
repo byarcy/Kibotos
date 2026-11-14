@@ -83,6 +83,9 @@ const ID_LIST: usize = 1000;
 /// Gives up waiting for the shell to copy the drag marker.
 const TIMER_DROP: usize = 1;
 const DROP_WAIT_MS: u32 = 60_000;
+/// Tells Explorer about new files while an extraction to a folder runs.
+const TIMER_SHELL: usize = 2;
+const SHELL_REFRESH_MS: u32 = 500;
 const ID_FILTER: usize = 1001;
 
 const SEL_FOCUS: LIST_VIEW_ITEM_STATE_FLAGS = LIST_VIEW_ITEM_STATE_FLAGS(LVIS_SELECTED.0 | LVIS_FOCUSED.0);
@@ -163,10 +166,8 @@ struct App {
     close_pending: bool,
     /// A drag dropped on the shell: waiting to learn the folder.
     drop_wait: Option<(drag::Watch, Pick)>,
-    /// A drag loop is running; a folder found meanwhile waits in
-    /// `drop_found`.
-    dragging: bool,
-    drop_found: Option<PathBuf>,
+    /// Folder an extraction is writing to, refreshed in Explorer.
+    shell_dir: Option<PathBuf>,
     /// An extraction the UI waits for in a nested loop (drop on another
     /// program), and its result.
     blocking: bool,
@@ -528,6 +529,12 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             }
             drag::WM_APP_SHNOTIFY => {
                 on_shell_notify(hwnd, wp, lp);
+                LRESULT(0)
+            }
+            WM_TIMER if wp.0 == TIMER_SHELL => {
+                if let Some(dir) = with_app(|a| a.shell_dir.clone()) {
+                    drag::shell_refresh(&dir);
+                }
                 LRESULT(0)
             }
             WM_TIMER if wp.0 == TIMER_DROP => {
@@ -1031,9 +1038,8 @@ fn refresh(select: Option<NodeId>) {
                 a.rows_query = a.query.clone();
             } else {
                 arc.ord.folder_rows(&arc.index, a.folder, &mut a.rows);
-                if a.folder != ArchiveIndex::ROOT {
-                    a.rows.insert(0, UP);
-                }
+                // At the root ".." leads to the folder holding the archive.
+                a.rows.insert(0, UP);
                 a.rows_query.clear();
             }
             // The full path, so it can be copied or edited in the path bar.
@@ -1681,23 +1687,17 @@ fn begin_drag(list: HWND, pt: POINT) {
     let marker = watch.marker().to_path_buf();
     // The shell may copy the marker before the drag loop returns, so the
     // watch must be in place (and its result kept) during the drag.
-    with_app(|a| {
-        a.drop_wait = Some((watch, p.clone()));
-        a.dragging = true;
-        a.drop_found = None;
-    });
+    with_app(|a| a.drop_wait = Some((watch, p.clone())));
     // For a program other than the shell: extract to temporary files when
     // the button is released over it.
     let mut once = Some(p);
     let extract_now = Box::new(move || once.take().and_then(|p| extract_for_drop(hwnd, p)));
     let outcome = drag::run(hwnd, list, pt, &marker, extract_now);
-    let found = with_app(|a| {
-        a.dragging = false;
-        a.drop_found.take()
-    });
-    match (outcome, found) {
-        (drag::Outcome::Shell, Some(folder)) => drop_into(hwnd, folder),
-        (drag::Outcome::Shell, None) => unsafe {
+    if with_app(|a| a.drop_wait.is_none()) {
+        return; // the marker already landed and extraction has started
+    }
+    match outcome {
+        drag::Outcome::Shell => unsafe {
             SetTimer(Some(hwnd), TIMER_DROP, DROP_WAIT_MS, None);
         },
         _ => with_app(|a| a.drop_wait = None),
@@ -1708,11 +1708,8 @@ fn begin_drag(list: HWND, pt: POINT) {
 fn on_shell_notify(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
     let folder = with_app(|a| a.drop_wait.as_ref().and_then(|(w, _)| w.check(wp, lp)));
     let Some(folder) = folder else { return };
-    if with_app(|a| a.dragging) {
-        // Still inside the drag loop: handled when it returns.
-        with_app(|a| a.drop_found = Some(folder));
-        return;
-    }
+    // Explorer copies the marker about 0.1 s after the drop but keeps the
+    // drag loop busy for another ~0.35 s finishing its copy: start now.
     drop_into(hwnd, folder);
 }
 
@@ -1943,6 +1940,12 @@ fn start_extract(hwnd: HWND, job: ExtractJob) {
     let heading = format!("{name}  →  {}", job.dest.shown().display());
     progress::open(Some(hwnd), &title, &heading, ctl.clone());
     set_status(verb, "");
+    if job.open_after.is_none() && !with_app(|a| a.blocking) {
+        with_app(|a| a.shell_dir = Some(job.dest.shown().to_path_buf()));
+        unsafe {
+            SetTimer(Some(hwnd), TIMER_SHELL, SHELL_REFRESH_MS, None);
+        }
+    }
     job::spawn(hwnd, job, ctl);
 }
 
@@ -1950,6 +1953,12 @@ unsafe fn on_extracted(hwnd: HWND, lp: LPARAM) {
     let done = unsafe { job::take_done(lp) };
     progress::close();
     with_app(|a| a.job = None);
+    if with_app(|a| a.shell_dir.take()).is_some() {
+        unsafe {
+            let _ = KillTimer(Some(hwnd), TIMER_SHELL);
+        }
+        drag::shell_refresh(&done.dest);
+    }
     if with_app(|a| a.blocking) {
         with_app(|a| a.blocking_done = Some(done));
         return;
