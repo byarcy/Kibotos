@@ -22,6 +22,7 @@ mod pump;
 pub mod safety;
 mod sink;
 mod time;
+pub mod view;
 
 use std::path::Path;
 

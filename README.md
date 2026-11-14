@@ -2,7 +2,7 @@
 
 A fast, lightweight archive manager for Windows, written in Rust.
 
-Status: **v0.1 in progress — step 2 of 8** (core library, console tool, main window with the archive list).
+Status: **v0.1 in progress — step 3 of 8** (core library, console tool, main window with navigation, sorting and filter).
 
 ## Layout
 
@@ -16,6 +16,16 @@ Status: **v0.1 in progress — step 2 of 8** (core library, console tool, main w
 The release build is a single `kibotos.exe` with the C runtime linked statically (see `.cargo/config.toml`), so it needs no Visual C++ Redistributable.
 
 Set `KIBOTOS_TIMING=<file>` to log startup timings (milliseconds since process creation) to that file.
+
+## Keyboard
+
+| Key | Action |
+|---|---|
+| Enter / double-click | Open folder (on a filter result: show it in its folder) |
+| Backspace / Alt+Up | Up one folder (or leave the filter) |
+| Typing in the list, Ctrl+F | Filter names across the whole archive |
+| Esc | Clear the filter |
+| Ctrl+O | Open an archive |
 
 ## Formats (read and extract)
 

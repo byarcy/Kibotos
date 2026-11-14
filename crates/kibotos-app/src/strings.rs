@@ -17,6 +17,9 @@ pub mod es {
     pub const COL_PACKED: &str = "Comprimido";
     pub const COL_MODIFIED: &str = "Modificado";
 
+    pub const UP_ROW: &str = "..";
+    pub const FILTER_CUE: &str = "Filtrar en todo el archivo (Ctrl+F)";
+
     pub const STATUS_READY: &str = "Arrastra un archivo comprimido aquí o pulsa Ctrl+O para abrirlo.";
     pub const STATUS_OPENING: &str = "Abriendo...";
 
@@ -62,6 +65,15 @@ pub fn items_summary(files: usize, dirs: usize) -> String {
     let f = if files == 1 { "archivo".to_string() } else { "archivos".to_string() };
     let d = if dirs == 1 { "carpeta".to_string() } else { "carpetas".to_string() };
     format!("{} {f}, {} {d}", number(files as u64), number(dirs as u64))
+}
+
+pub fn folder_items(n: usize) -> String {
+    if n == 1 { "1 elemento".into() } else { format!("{} elementos", number(n as u64)) }
+}
+
+pub fn matches(n: usize, query: &str) -> String {
+    let word = if n == 1 { "coincidencia" } else { "coincidencias" };
+    format!("{} {word} de «{query}»", number(n as u64))
 }
 
 pub fn opened_in(format: &str, entries: usize, ms: f64) -> String {

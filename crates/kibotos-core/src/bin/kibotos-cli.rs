@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
+use kibotos_core::view::{Ordering, Sort, refine_rows};
 use kibotos_core::{ArchiveIndex, ArchiveReader, Control, DiskSink, EntryKind, OpenOptions, Overwrite, Timestamp};
 
 const USAGE: &str = "\
@@ -127,7 +128,11 @@ fn cmd_list(args: &[String]) -> Result<(), String> {
     println!("total        {}", ms(t_total));
 
     if let Some(q) = c.filter {
-        // Simulates typing the query one character at a time.
+        // Same code path as the window: one global sort, then each keystroke
+        // walks it (or narrows the previous result).
+        let t = Instant::now();
+        let ord = Ordering::new(&index, reader.entries(), Sort::default());
+        let t_sort = t.elapsed();
         let mut results = Vec::new();
         let mut worst = Duration::ZERO;
         let mut sum = Duration::ZERO;
@@ -135,16 +140,26 @@ fn cmd_list(args: &[String]) -> Result<(), String> {
         for n in 1..=chars.len() {
             let prefix: String = chars[..n].iter().collect();
             let t = Instant::now();
-            index.search(&prefix, &mut results);
+            if n == 1 {
+                ord.filter_rows(&index, &prefix, &mut results);
+            } else {
+                refine_rows(&index, &prefix, &mut results);
+            }
             let d = t.elapsed();
             worst = worst.max(d);
             sum += d;
         }
+        // The first keystroke matches the most nodes: the worst case.
+        let t = Instant::now();
+        ord.filter_rows(&index, &chars[..1].iter().collect::<String>(), &mut Vec::new());
+        let first = t.elapsed();
+        println!("sort by name {}", ms(t_sort));
         println!(
-            "filter       '{q}': {} matches, per keystroke avg {} / worst {}",
+            "filter       '{q}': {} matches, per keystroke avg {} / worst {} (first key, full scan: {})",
             results.len(),
             ms(sum / chars.len().max(1) as u32),
-            ms(worst)
+            ms(worst),
+            ms(first)
         );
     }
     Ok(())
