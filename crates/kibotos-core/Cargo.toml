@@ -1,0 +1,42 @@
+[package]
+name = "kibotos-core"
+description = "Archive format backends, in-memory index and safe extraction for Kibotos"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+
+[[bin]]
+# Console tool used to test and benchmark the core without the UI.
+name = "kibotos-cli"
+path = "src/bin/kibotos-cli.rs"
+
+[dependencies]
+# Only read-side features are enabled for v0.1; compression features come with v0.2.
+zip = { version = "9.5", default-features = false, features = [
+    "aes-crypto",
+    "bzip2",
+    "deflate64",
+    "deflate-flate2-zlib-rs",
+    "lzma",
+    "ppmd",
+    "xz",
+    "zstd",
+] }
+sevenz-rust2 = { version = "0.25", default-features = false, features = ["aes256", "bzip2", "ppmd", "deflate", "zstd"] }
+tar = { version = "0.4.46", default-features = false }
+flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
+bzip2 = "0.6"
+zstd = { version = "0.14", default-features = false }
+lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "xz", "optimization"] }
+
+[target.'cfg(windows)'.dependencies]
+# Official unRAR source (extraction only). See licenses/unRAR-license.txt.
+unrar_sys = "0.5.8"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Time"] }
+
+[dev-dependencies]
+tempfile = "3"
+sevenz-rust2 = { version = "0.25", default-features = false, features = ["aes256", "compress"] }
+lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "xz", "encoder"] }
+zstd = { version = "0.14", default-features = false }
