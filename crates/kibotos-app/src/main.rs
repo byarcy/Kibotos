@@ -6,6 +6,7 @@ mod cli;
 mod dialogs;
 mod drag;
 mod format;
+mod fsview;
 mod icons;
 mod integrate;
 mod job;
@@ -48,7 +49,8 @@ fn main() {
     if args.first().and_then(|a| a.to_str()).is_some_and(|a| a.starts_with("--")) {
         std::process::exit(cli::run(&args));
     }
-    // Otherwise the first argument, if any, is an archive to open (Explorer
-    // passes "%1"; dragging a file onto the .exe does the same).
+    // Otherwise the first argument, if any, is an archive or folder to open
+    // (Explorer passes "%1"; dragging a file onto the .exe does the same).
+    // Without one, the window starts in "Este equipo".
     window::run(args.into_iter().next().map(PathBuf::from));
 }

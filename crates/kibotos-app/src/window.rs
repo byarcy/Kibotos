@@ -34,17 +34,19 @@ use windows::Win32::UI::Controls::Dialogs::{
 use windows::Win32::UI::Controls::*;
 use windows::Win32::UI::HiDpi::{GetDpiForSystem, GetDpiForWindow, SystemParametersInfoForDpi};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetFocus, GetKeyState, SetFocus, VK_BACK, VK_CONTROL, VK_DOWN, VK_ESCAPE, VK_MENU, VK_NEXT, VK_PRIOR, VK_RETURN,
-    VK_UP,
+    GetFocus, GetKeyState, SetFocus, VK_BACK, VK_CONTROL, VK_DOWN, VK_ESCAPE, VK_F5, VK_MENU, VK_NEXT, VK_PRIOR,
+    VK_RETURN, VK_UP,
 };
 use windows::Win32::UI::Shell::{
-    DefSubclassProc, DragFinish, DragQueryFileW, HDROP, SHELLEXECUTEINFOW, SetWindowSubclass, ShellExecuteExW,
+    DefSubclassProc, DragFinish, DragQueryFileW, HDROP, SEE_MASK_INVOKEIDLIST, SHELLEXECUTEINFOW, SetWindowSubclass,
+    ShellExecuteExW,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{HSTRING, PCWSTR, PWSTR, w};
 
 use crate::dialogs;
 use crate::drag;
+use crate::fsview;
 use crate::icons::IconCache;
 use crate::job::{self, Dest, ExtractDone, ExtractJob, WM_APP_CONFLICT, WM_APP_EXTRACTED};
 use crate::progress;
@@ -60,6 +62,8 @@ const ID_EXIT: u16 = 102;
 const ID_FIND: u16 = 103;
 const ID_UP: u16 = 104;
 const ID_EXTRACT: u16 = 105;
+const ID_PATHBAR: u16 = 106;
+const ID_REFRESH: u16 = 107;
 const ID_ABOUT: u16 = 201;
 const ID_INTEGRATE: u16 = 301;
 const ID_UNINTEGRATE: u16 = 302;
@@ -70,6 +74,10 @@ const CM_EXTRACT_NEXT: u32 = 404;
 const CM_LOCATE: u32 = 405;
 const CM_COPY_PATH: u32 = 406;
 const CM_PROPERTIES: u32 = 407;
+const CM_FS_EXTRACT_HERE: u32 = 408;
+const CM_FS_EXTRACT_FOLDER: u32 = 409;
+const CM_SHOW_IN_EXPLORER: u32 = 410;
+const CM_REFRESH: u32 = 411;
 const ID_LIST: usize = 1000;
 
 /// Gives up waiting for the shell to copy the drag marker.
@@ -78,12 +86,6 @@ const DROP_WAIT_MS: u32 = 60_000;
 const ID_FILTER: usize = 1001;
 
 const SEL_FOCUS: LIST_VIEW_ITEM_STATE_FLAGS = LIST_VIEW_ITEM_STATE_FLAGS(LVIS_SELECTED.0 | LVIS_FOCUSED.0);
-
-// Static control styles (defined in a large windows-crate module we skip).
-const SS_LEFTNOWORDWRAP: u32 = 0x000C;
-const SS_NOPREFIX: u32 = 0x0080;
-const SS_CENTERIMAGE: u32 = 0x0200;
-const SS_PATHELLIPSIS: u32 = 0x8000;
 
 /// Row value for the ".." entry at the top of a subfolder.
 const UP: NodeId = NodeId::MAX;
@@ -107,11 +109,18 @@ struct Loaded {
     summary: String,
 }
 
+/// What a worker opened: an archive (and a path inside it to show), or a
+/// disk listing (and a path to select).
+enum Opened {
+    Archive(Loaded, Option<String>),
+    Folder(fsview::Listing, Option<PathBuf>),
+}
+
 struct LoadMsg {
     generation: u64,
     path: PathBuf,
     password: Option<String>,
-    result: kibotos_core::Result<Loaded>,
+    result: kibotos_core::Result<Opened>,
 }
 
 #[derive(Default)]
@@ -123,7 +132,12 @@ struct App {
     font: HFONT,
     dpi: u32,
     archive: Option<Loaded>,
-    /// Rows in display order (`UP` for "..").
+    /// The disk listing shown when no archive is open.
+    fs: Option<fsview::Listing>,
+    /// Archives waiting to be extracted (several chosen in the disk view).
+    queue: std::collections::VecDeque<ExtractJob>,
+    /// Rows in display order (`UP` for ".."). In the disk view, indices
+    /// into `fs.items`.
     rows: Vec<NodeId>,
     folder: NodeId,
     /// Filter text as typed; empty means "show the current folder".
@@ -247,8 +261,9 @@ pub fn run(archive: Option<PathBuf>) {
 
         // Start reading the archive before the window is painted, so disk
         // I/O overlaps with window creation.
-        if let Some(path) = archive {
-            start_load(hwnd, path, None);
+        match archive {
+            Some(path) => start_load(hwnd, path, None),
+            None => open_place(hwnd, fsview::Place::Computer, None),
         }
 
         let _ = ShowWindow(hwnd, SW_SHOWDEFAULT);
@@ -260,6 +275,9 @@ pub fn run(archive: Option<PathBuf>) {
             ACCEL { fVirt: FCONTROL | FVIRTKEY, key: b'F' as u16, cmd: ID_FIND },
             ACCEL { fVirt: FCONTROL | FVIRTKEY, key: b'E' as u16, cmd: ID_EXTRACT },
             ACCEL { fVirt: FALT | FVIRTKEY, key: VK_UP.0, cmd: ID_UP },
+            ACCEL { fVirt: FCONTROL | FVIRTKEY, key: b'L' as u16, cmd: ID_PATHBAR },
+            ACCEL { fVirt: FALT | FVIRTKEY, key: b'D' as u16, cmd: ID_PATHBAR },
+            ACCEL { fVirt: FVIRTKEY, key: VK_F5.0, cmd: ID_REFRESH },
         ])
         .unwrap_or_default();
         let mut msg = MSG::default();
@@ -324,9 +342,9 @@ unsafe fn on_create(hwnd: HWND) {
     unsafe {
         let path_label = child(
             hwnd,
-            w!("STATIC"),
-            WINDOW_STYLE(SS_LEFTNOWORDWRAP | SS_PATHELLIPSIS | SS_CENTERIMAGE | SS_NOPREFIX),
-            WINDOW_EX_STYLE(0),
+            w!("EDIT"),
+            WS_TABSTOP | WINDOW_STYLE(ES_AUTOHSCROLL as u32),
+            WS_EX_CLIENTEDGE,
             0,
         );
         let filter = child(
@@ -349,6 +367,7 @@ unsafe fn on_create(hwnd: HWND) {
         send(filter, EM_SETCUEBANNER, 1, cue.as_ptr() as isize);
         let _ = SetWindowSubclass(list, Some(list_proc), 1, 0);
         let _ = SetWindowSubclass(filter, Some(filter_proc), 2, 0);
+        let _ = SetWindowSubclass(path_label, Some(path_proc), 3, 0);
 
         let _ = SetWindowTheme(list, w!("Explorer"), PCWSTR::null());
         // Double buffering also paints faster here (measured ~9 vs ~12 ms).
@@ -432,7 +451,7 @@ unsafe fn layout(hwnd: HWND) {
         let bar = s(30);
         let pad = s(4);
         let fw = s(280).min(rc.right / 2);
-        let _ = MoveWindow(label, s(8), 0, (rc.right - fw - s(20)).max(0), bar, true);
+        let _ = MoveWindow(label, pad, pad, (rc.right - fw - 3 * pad).max(0), bar - 2 * pad, true);
         let _ = MoveWindow(filter, rc.right - fw - pad, pad, fw, bar - 2 * pad, true);
         let _ = MoveWindow(list, 0, bar, rc.right, (rc.bottom - sh - bar).max(0), true);
     }
@@ -539,6 +558,13 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 LRESULT(0)
             }
             WM_CLOSE => {
+                // Closing from inside a menu's modal loop would leave the
+                // loop running without a window: close the menu first.
+                if MENU_OPEN.with(|m| m.get()) {
+                    let _ = EndMenu();
+                    let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
+                    return LRESULT(0);
+                }
                 if confirm_close(hwnd) {
                     let _ = DestroyWindow(hwnd);
                 }
@@ -583,6 +609,8 @@ unsafe fn on_command(hwnd: HWND, id: u16) {
                 crate::cli::integration(hwnd, false);
             }
             ID_UP => go_up(),
+            ID_PATHBAR => focus_path_bar(),
+            ID_REFRESH => reload(hwnd),
             ID_ABOUT => {
                 MessageBoxW(
                     Some(hwnd),
@@ -660,7 +688,7 @@ unsafe extern "system" fn list_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
                 if c == 0x0D || c == 0x08 || c == 0x1B || c == 0x01 {
                     return LRESULT(0); // handled in WM_KEYDOWN; avoid the beep
                 }
-                if c >= 0x20 && c != 0x7F {
+                if c > 0x20 && c != 0x7F && !ctrl_down() {
                     let filter = with_app(|a| a.filter);
                     let _ = SetFocus(Some(filter));
                     send(filter, EM_SETSEL, usize::MAX, -1);
@@ -748,41 +776,101 @@ fn file_name(path: &Path) -> String {
     path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
-/// Opens, indexes and sorts an archive on a worker thread. The UI thread
-/// stays free; the result arrives as WM_APP_LOADED.
+/// Opens an archive or a folder (see [`start_open`]).
 fn start_load(hwnd: HWND, path: PathBuf, password: Option<String>) {
+    start_open(hwnd, Target::Path(path), password, None);
+}
+
+/// What to show next.
+enum Target {
+    /// A folder, an archive, or a path inside an archive
+    /// (`D:\x\fotos.zip\2026`), decided on the worker thread.
+    Path(PathBuf),
+    Place(fsview::Place),
+}
+
+/// Splits `D:\x\fotos.zip\2026\a.jpg` into the archive file and the path
+/// inside it (`2026/a.jpg`). Runs on the worker (touches the disk).
+fn split_archive_path(path: &Path) -> Option<(PathBuf, String)> {
+    let mut base = path.to_path_buf();
+    let mut inner = Vec::new();
+    while !base.exists() {
+        inner.push(base.file_name()?.to_string_lossy().into_owned());
+        base = base.parent()?.to_path_buf();
+    }
+    if !base.is_file() {
+        return None;
+    }
+    inner.reverse();
+    Some((base, inner.join("/")))
+}
+
+/// Opens a folder, an archive or a path inside an archive on a worker
+/// thread. The UI thread stays free; the result arrives as WM_APP_LOADED.
+/// `select` is a disk path to select in a folder listing.
+fn start_open(hwnd: HWND, target: Target, password: Option<String>, select: Option<PathBuf>) {
     let (generation, sort) = with_app(|a| {
         a.generation += 1;
         (a.generation, a.sort)
     });
-    set_status(t::STATUS_OPENING, "");
-    let target = hwnd.0 as isize;
+    let archive_like = matches!(&target, Target::Path(p) if fsview::is_archive_name(&p.to_string_lossy()));
+    if archive_like {
+        set_status(t::STATUS_OPENING, "");
+    }
+    let hwnd_raw = hwnd.0 as isize;
     std::thread::spawn(move || {
         let t0 = Instant::now();
-        let opts = OpenOptions { password: password.clone() };
-        let result = kibotos_core::open(&path, &opts).map(|reader| {
-            let index = ArchiveIndex::build(reader.entries());
-            prefetch_icons(target, &index);
-            let ord = Ordering::new(&index, reader.entries(), sort);
-            let open_ms = t0.elapsed().as_secs_f64() * 1000.0;
-            let entries = reader.entries();
-            let files = entries.iter().filter(|e: &&Entry| e.kind == EntryKind::File).count();
-            let dirs = (1..index.len() as NodeId).filter(|&n| index.is_dir(n)).count();
-            let summary = format!(
-                "{}  ·  {}",
-                strings::opened_in(reader.format().name(), entries.len(), open_ms),
-                strings::items_summary(files, dirs)
-            );
-            Loaded { path: path.clone(), password: password.clone(), reader, index, ord, open_ms, summary }
-        });
-        let msg = Box::into_raw(Box::new(LoadMsg { generation, path, password, result }));
+        let shown_path;
+        let result = match target {
+            Target::Place(place) => {
+                shown_path = PathBuf::from(place.shown());
+                list_place(place, select)
+            }
+            Target::Path(path) if path.is_dir() => {
+                shown_path = path.clone();
+                list_place(fsview::Place::Folder(path), select)
+            }
+            Target::Path(path) => {
+                let (archive, inner) = split_archive_path(&path).unwrap_or((path.clone(), String::new()));
+                shown_path = archive.clone();
+                open_archive(hwnd_raw, archive, password.clone(), sort, t0)
+                    .map(|l| Opened::Archive(l, (!inner.is_empty()).then_some(inner)))
+            }
+        };
+        let msg = Box::into_raw(Box::new(LoadMsg { generation, path: shown_path, password, result }));
         // SAFETY: on success the UI thread takes ownership of `msg`.
         unsafe {
-            if PostMessageW(Some(HWND(target as _)), WM_APP_LOADED, WPARAM(0), LPARAM(msg as isize)).is_err() {
+            if PostMessageW(Some(HWND(hwnd_raw as _)), WM_APP_LOADED, WPARAM(0), LPARAM(msg as isize)).is_err() {
                 drop(Box::from_raw(msg));
             }
         }
     });
+}
+
+fn list_place(place: fsview::Place, select: Option<PathBuf>) -> kibotos_core::Result<Opened> {
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    }
+    fsview::list(place).map(|l| Opened::Folder(l, select)).map_err(Error::Io)
+}
+
+fn open_archive(target: isize, path: PathBuf, password: Option<String>, sort: Sort, t0: Instant) -> kibotos_core::Result<Loaded> {
+    let opts = OpenOptions { password: password.clone() };
+    kibotos_core::open(&path, &opts).map(|reader| {
+        let index = ArchiveIndex::build(reader.entries());
+        prefetch_icons(target, &index);
+        let ord = Ordering::new(&index, reader.entries(), sort);
+        let open_ms = t0.elapsed().as_secs_f64() * 1000.0;
+        let entries = reader.entries();
+        let files = entries.iter().filter(|e: &&Entry| e.kind == EntryKind::File).count();
+        let dirs = (1..index.len() as NodeId).filter(|&n| index.is_dir(n)).count();
+        let summary = format!(
+            "{}  ·  {}",
+            strings::opened_in(reader.format().name(), entries.len(), open_ms),
+            strings::items_summary(files, dirs)
+        );
+        Loaded { path, password, reader, index, ord, open_ms, summary }
+    })
 }
 
 /// Looks up the icons of every file type in the archive on another thread,
@@ -814,21 +902,22 @@ unsafe fn on_loaded(hwnd: HWND, lp: LPARAM) {
         if msg.generation != current {
             return;
         }
-        let loaded = match msg.result {
-            Ok(l) => l,
+        let opened = match msg.result {
+            Ok(o) => o,
             // Encrypted file names (7z, RAR): ask and open again.
             Err(e @ (Error::PasswordRequired | Error::WrongPassword)) => {
                 let wrong = matches!(e, Error::WrongPassword) || msg.password.is_some();
-                set_status(t::STATUS_READY, "");
+                refresh_status();
                 if let Some(pw) = dialogs::ask_password(hwnd, &file_name(&msg.path), wrong) {
                     start_load(hwnd, msg.path, Some(pw));
                 }
                 return;
             }
             Err(e) => {
-                set_status(t::STATUS_READY, "");
-                let text = format!("{}\n\n{}", file_name(&msg.path), strings::error_message(&e));
-                MessageBoxW(Some(hwnd), &HSTRING::from(text), &HSTRING::from(t::ERROR_TITLE), MB_OK | MB_ICONERROR);
+                refresh_status();
+                let title = if msg.path.is_dir() { t::FOLDER_ERROR_TITLE } else { t::ERROR_TITLE };
+                let text = format!("{}\n\n{}", msg.path.display(), strings::error_message(&e));
+                MessageBoxW(Some(hwnd), &HSTRING::from(text), &HSTRING::from(title), MB_OK | MB_ICONERROR);
                 return;
             }
         };
@@ -842,20 +931,72 @@ unsafe fn on_loaded(hwnd: HWND, lp: LPARAM) {
             with_app(|a| a.image_list_set = true);
         }
 
-        let title = format!("{} - {}", file_name(&loaded.path), t::APP_NAME);
-        let open_ms = loaded.open_ms;
-        with_app(|a| {
-            a.archive = Some(loaded);
-            a.folder = ArchiveIndex::ROOT;
-        });
-        set_filter_text("");
-        let _ = SetWindowTextW(hwnd, &HSTRING::from(title));
-        refresh(None);
-        let _ = SetFocus(Some(list));
+        let title = match opened {
+            Opened::Archive(loaded, inner) => {
+                let title = file_name(&loaded.path);
+                let open_ms = loaded.open_ms;
+                let mut select = None;
+                with_app(|a| {
+                    a.folder = ArchiveIndex::ROOT;
+                    if let Some(node) = inner.as_deref().and_then(|p| loaded.index.find(p)) {
+                        if loaded.index.is_dir(node) {
+                            a.folder = node;
+                        } else {
+                            a.folder = loaded.index.parent(node).unwrap_or(ArchiveIndex::ROOT);
+                            select = Some(node);
+                        }
+                    }
+                    a.archive = Some(loaded);
+                    a.fs = None;
+                    a.query.clear();
+                });
+                set_filter_text("");
+                set_mode(true);
+                refresh(select);
+                timing::mark("archive visible", &format!("(open+index+sort={open_ms:.1} ms)"));
+                title
+            }
+            Opened::Folder(mut listing, select) => {
+                let icons = std::mem::take(&mut listing.icons);
+                let title = listing.place.title();
+                with_app(|a| {
+                    a.icons.warm(icons.0, icons.1);
+                    a.fs = Some(listing);
+                    a.archive = None;
+                    a.query.clear();
+                });
+                set_filter_text("");
+                set_mode(false);
+                let sel = select.and_then(|p| with_app(|a| a.fs.as_ref()?.items.iter().position(|i| i.path == p)));
+                refresh(sel.map(|i| i as NodeId));
+                timing::mark("folder visible", &title);
+                title
+            }
+        };
+        let _ = SetWindowTextW(hwnd, &HSTRING::from(format!("{title} - {}", t::APP_NAME)));
+        if GetFocus() != with_app(|a| a.path_label) {
+            let _ = SetFocus(Some(list));
+        }
         let _ = UpdateWindow(list);
-        let count = with_app(|a| a.rows.len());
-        timing::mark("archive visible", &format!("(rows={count}, open+index+sort={open_ms:.1} ms)"));
     }
+}
+
+/// Column titles and filter hint for archive or disk views.
+fn set_mode(archive: bool) {
+    let (list, filter) = with_app(|a| (a.list, a.filter));
+    // Third column: packed size (numbers, right) or type (text, left).
+    let dpi = with_app(|a| a.dpi.max(96));
+    let mut title = wide(if archive { t::COL_PACKED } else { t::COL_TYPE });
+    let col = LVCOLUMNW {
+        mask: LVCF_TEXT | LVCF_FMT | LVCF_WIDTH,
+        fmt: if archive { LVCFMT_RIGHT } else { LVCFMT_LEFT },
+        cx: scale(if archive { COLUMNS[2].1 } else { 160 }, dpi),
+        pszText: PWSTR(title.as_mut_ptr()),
+        ..Default::default()
+    };
+    send(list, LVM_SETCOLUMNW, 2, &col as *const _ as isize);
+    let cue = wide(if archive { t::FILTER_CUE } else { t::FILTER_CUE_FOLDER });
+    send(filter, EM_SETCUEBANNER, 1, cue.as_ptr() as isize);
 }
 
 // ------------------------------------------------------- view changes
@@ -864,37 +1005,48 @@ unsafe fn on_loaded(hwnd: HWND, lp: LPARAM) {
 /// path bar and status, and selects `select` (or the first row).
 fn refresh(select: Option<NodeId>) {
     let Some((list, label, count, sel, path_text, left, right)) = with_app(|a| {
-        let arc = a.archive.as_ref()?;
         let filtering = !a.query.is_empty();
-        if filtering {
-            let narrows = !a.rows_query.is_empty() && a.query.to_lowercase().contains(&a.rows_query.to_lowercase());
-            if narrows {
-                refine_rows(&arc.index, &a.query, &mut a.rows);
-            } else {
-                arc.ord.filter_rows(&arc.index, &a.query, &mut a.rows);
-            }
-            a.rows_query = a.query.clone();
-        } else {
-            arc.ord.folder_rows(&arc.index, a.folder, &mut a.rows);
-            if a.folder != ArchiveIndex::ROOT {
+        let (path_text, right) = if let Some(fs) = a.fs.as_ref() {
+            fsview::rows(&fs.items, a.sort, &a.query, &mut a.rows);
+            if !filtering && fs.place.parent().is_some() {
                 a.rows.insert(0, UP);
             }
             a.rows_query.clear();
-        }
+            (fs.place.shown(), fs.summary.clone())
+        } else {
+            let arc = a.archive.as_ref()?;
+            if filtering {
+                let narrows =
+                    !a.rows_query.is_empty() && a.query.to_lowercase().contains(&a.rows_query.to_lowercase());
+                if narrows {
+                    refine_rows(&arc.index, &a.query, &mut a.rows);
+                } else {
+                    arc.ord.filter_rows(&arc.index, &a.query, &mut a.rows);
+                }
+                a.rows_query = a.query.clone();
+            } else {
+                arc.ord.folder_rows(&arc.index, a.folder, &mut a.rows);
+                if a.folder != ArchiveIndex::ROOT {
+                    a.rows.insert(0, UP);
+                }
+                a.rows_query.clear();
+            }
+            // The full path, so it can be copied or edited in the path bar.
+            let mut path_text = arc.path.display().to_string();
+            let folder_path = arc.index.path(a.folder);
+            if !folder_path.is_empty() {
+                path_text.push('\\');
+                path_text.push_str(&folder_path.replace('/', "\\"));
+            }
+            (path_text, arc.summary.clone())
+        };
         // By default select the first real item, not "..", so Enter keeps
         // going down and Backspace goes up.
         let first = usize::from(a.rows.len() > 1 && a.rows[0] == UP);
         let sel = select.and_then(|n| a.rows.iter().position(|&r| r == n)).unwrap_or(first);
-
-        let mut path_text = file_name(&arc.path);
-        let folder_path = arc.index.path(a.folder);
-        if !folder_path.is_empty() {
-            path_text.push('\\');
-            path_text.push_str(&folder_path.replace('/', "\\"));
-        }
         let shown = a.rows.iter().filter(|&&r| r != UP).count();
         let left = if filtering { strings::matches(shown, &a.query) } else { strings::folder_items(shown) };
-        Some((a.list, a.path_label, a.rows.len(), sel, path_text, left, arc.summary.clone()))
+        Some((a.list, a.path_label, a.rows.len(), sel, path_text, left, right))
     }) else {
         return;
     };
@@ -941,6 +1093,25 @@ fn ctrl_down() -> bool {
 /// Enter or double-click on a row. Folders open; files open with their
 /// program. `locate` (Ctrl+Enter) shows a filter result in its folder.
 fn activate(row: usize, locate: bool) {
+    let hwnd = with_app(|a| unsafe { GetParent(a.list) }.unwrap_or_default());
+    // Disk view: folders and drives open here, archives open in Kibotós,
+    // other files with their program.
+    let fs_item = with_app(|a| {
+        let fs = a.fs.as_ref()?;
+        let node = *a.rows.get(row)?;
+        if node == UP {
+            return Some(None);
+        }
+        let it = &fs.items[node as usize];
+        Some(Some((it.path.clone(), it.is_container(), it.archive)))
+    });
+    match fs_item {
+        Some(None) => return go_up(),
+        Some(Some((path, true, _))) => return open_place(hwnd, fsview::Place::Folder(path), None),
+        Some(Some((path, false, true))) => return start_load(hwnd, path, None),
+        Some(Some((path, false, false))) => return shell_open(hwnd, &path, false),
+        None => {}
+    }
     let Some((node, is_dir, parent, filtering)) = with_app(|a| {
         let arc = a.archive.as_ref()?;
         let node = *a.rows.get(row)?;
@@ -958,9 +1129,13 @@ fn activate(row: usize, locate: bool) {
     } else if is_dir {
         navigate(node, None);
     } else {
-        let hwnd = with_app(|a| unsafe { GetParent(a.list) }.unwrap_or_default());
         open_entry(hwnd, node, false);
     }
+}
+
+/// Lists a disk place, selecting `select` (a path) if given.
+fn open_place(hwnd: HWND, place: fsview::Place, select: Option<PathBuf>) {
+    start_open(hwnd, Target::Place(place), None, select);
 }
 
 /// Shows `folder`, leaving filter mode.
@@ -980,29 +1155,57 @@ fn navigate(folder: NodeId, select: Option<NodeId>) {
 /// Backspace / Alt+Up: leaves filter mode, or goes to the parent folder and
 /// selects the folder we came from.
 fn go_up() {
+    enum Up {
+        Folder(NodeId, Option<NodeId>),
+        LeaveFilter,
+        Place(fsview::Place, Option<PathBuf>),
+    }
     let target = with_app(|a| {
-        let arc = a.archive.as_ref()?;
         if !a.query.is_empty() {
-            return Some((a.folder, None));
+            return Some(Up::LeaveFilter);
         }
-        let parent = arc.index.parent(a.folder)?;
-        Some((parent, Some(a.folder)))
+        if let Some(arc) = a.archive.as_ref() {
+            return Some(match arc.index.parent(a.folder) {
+                Some(parent) => Up::Folder(parent, Some(a.folder)),
+                // At the archive root: the folder that holds the archive.
+                None => Up::Place(
+                    arc.path.parent().map_or(fsview::Place::Computer, |p| fsview::Place::Folder(p.to_path_buf())),
+                    Some(arc.path.clone()),
+                ),
+            });
+        }
+        let fs = a.fs.as_ref()?;
+        let select = match &fs.place {
+            fsview::Place::Folder(p) => Some(p.clone()),
+            fsview::Place::Computer => None,
+        };
+        Some(Up::Place(fs.place.parent()?, select))
     });
-    if let Some((folder, select)) = target {
-        navigate(folder, select);
+    let hwnd = with_app(|a| unsafe { GetParent(a.list) }.unwrap_or_default());
+    match target {
+        Some(Up::Folder(folder, select)) => navigate(folder, select),
+        Some(Up::LeaveFilter) => clear_filter(),
+        Some(Up::Place(place, select)) => open_place(hwnd, place, select),
+        None => {}
     }
 }
 
 fn clear_filter() {
     let filtering = with_app(|a| !a.query.is_empty());
     if filtering {
-        let folder = with_app(|a| a.folder);
-        navigate(folder, None);
-    } else {
-        let list = with_app(|a| a.list);
-        unsafe {
-            let _ = SetFocus(Some(list));
+        if with_app(|a| a.fs.is_some()) {
+            with_app(|a| a.query.clear());
+            set_filter_text("");
+            refresh(None);
+        } else {
+            let folder = with_app(|a| a.folder);
+            navigate(folder, None);
+            return;
         }
+    }
+    let list = with_app(|a| a.list);
+    unsafe {
+        let _ = SetFocus(Some(list));
     }
 }
 
@@ -1160,6 +1363,10 @@ fn on_extract(hwnd: HWND) {
     if with_app(|a| a.job.is_some()) {
         return;
     }
+    if with_app(|a| a.fs.is_some()) {
+        let archives = fs_selection().into_iter().filter(|s| s.2).map(|s| s.0).collect();
+        return fs_extract(hwnd, archives, crate::cli::Mode::Dialog);
+    }
     let Some(p) = pick(true, false) else { return };
     if p.ids.is_empty() {
         return;
@@ -1212,6 +1419,15 @@ fn on_context_menu(hwnd: HWND, lp: LPARAM) {
         unsafe {
             let _ = ClientToScreen(list, &mut pt);
         }
+        // Rows are focused, not selected, after navigation: from the
+        // keyboard the menu is for the focused row.
+        if selected_rows(list).is_empty() && with_app(|a| a.rows.get(row).is_some_and(|&n| n != UP)) {
+            let item = LVITEMW { state: LVIS_SELECTED, stateMask: LVIS_SELECTED, ..Default::default() };
+            send(list, LVM_SETITEMSTATE, row, &item as *const _ as isize);
+        }
+    }
+    if with_app(|a| a.fs.is_some()) {
+        return fs_context_menu(hwnd, pt);
     }
     let Some((single, is_dir, count, filtering)) = with_app(|a| {
         let arc = a.archive.as_ref()?;
@@ -1252,7 +1468,7 @@ fn on_context_menu(hwnd: HWND, lp: LPARAM) {
             add(CM_COPY_PATH, t::CTX_COPY_PATH, true);
             add(CM_PROPERTIES, t::CTX_PROPERTIES, true);
         }
-        let cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, None, hwnd, None).0 as u32;
+        let cmd = track_menu(menu, hwnd, pt);
         let _ = DestroyMenu(menu);
         match cmd {
             CM_OPEN => {
@@ -1282,6 +1498,16 @@ fn on_context_menu(hwnd: HWND, lp: LPARAM) {
             _ => {}
         }
     }
+}
+
+thread_local!(static MENU_OPEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
+
+/// Shows a context menu and returns the chosen command (0 if none).
+fn track_menu(menu: HMENU, hwnd: HWND, pt: POINT) -> u32 {
+    MENU_OPEN.with(|m| m.set(true));
+    let cmd = unsafe { TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, None, hwnd, None) };
+    MENU_OPEN.with(|m| m.set(false));
+    cmd.0 as u32
 }
 
 /// The focused row if it is selected, else the first selected row.
@@ -1338,6 +1564,12 @@ fn set_clipboard_text(hwnd: HWND, text: &str) -> bool {
 
 /// Alt+Enter: name, sizes, date, CRC and encryption of the selection.
 fn show_properties(hwnd: HWND) {
+    if with_app(|a| a.fs.is_some()) {
+        if let [(path, _, _)] = &fs_selection()[..] {
+            shell_properties(hwnd, path);
+        }
+        return;
+    }
     let Some(p) = pick(false, false) else { return };
     let Some(text) = with_app(|a| {
         let arc = a.archive.as_ref()?;
@@ -1418,11 +1650,21 @@ fn begin_drag(list: HWND, pt: POINT) {
     if with_app(|a| a.job.is_some() || a.drop_wait.is_some()) {
         return;
     }
+    let hwnd = unsafe { GetParent(list) }.unwrap_or_default();
+    if with_app(|a| a.fs.is_some()) {
+        // Real files: a normal shell drag (copies).
+        let files: Vec<PathBuf> =
+            fs_selection().into_iter().filter(|s| s.1 != fsview::Kind::Place).map(|s| s.0).collect();
+        if !files.is_empty() {
+            ensure_com();
+            drag::files(hwnd, list, pt, &files);
+        }
+        return;
+    }
     let Some(p) = pick(false, true) else { return };
     if p.ids.is_empty() {
         return;
     }
-    let hwnd = unsafe { GetParent(list) }.unwrap_or_default();
     ensure_com();
     let Some(watch) = drag::Watch::start(hwnd) else { return };
     let marker = watch.marker().to_path_buf();
@@ -1702,6 +1944,24 @@ unsafe fn on_extracted(hwnd: HWND, lp: LPARAM) {
         return;
     }
     let ExtractDone { mut job, dest, result, secs } = done;
+    // Start the next queued archive once this one is fully handled.
+    struct Next(HWND);
+    impl Drop for Next {
+        fn drop(&mut self) {
+            if with_app(|a| a.job.is_some()) {
+                return; // a retry (password) is running
+            }
+            match with_app(|a| a.queue.pop_front()) {
+                Some(j) => start_extract(self.0, j),
+                None => {
+                    if with_app(|a| a.fs.is_some()) {
+                        reload(self.0);
+                    }
+                }
+            }
+        }
+    }
+    let _next = Next(hwnd);
     timing::mark("extract", &format!("{} in {secs:.2} s", dest.display()));
     if with_app(|a| std::mem::take(&mut a.close_pending)) {
         let _ = unsafe { PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0)) };
@@ -1725,6 +1985,7 @@ unsafe fn on_extracted(hwnd: HWND, lp: LPARAM) {
             dialogs::show_blocked(hwnd, &report);
         }
         Err(Error::Cancelled) => {
+            with_app(|a| a.queue.clear());
             let summary = with_app(|a| a.shown.2.clone());
             set_status(t::EXTRACT_CANCELLED, &summary);
         }
@@ -1745,7 +2006,8 @@ unsafe fn on_extracted(hwnd: HWND, lp: LPARAM) {
         }
         Err(e) => {
             refresh_status();
-            dialogs::message(hwnd, t::EXTRACT_ERROR_TITLE, &strings::error_message(&e), MB_ICONERROR);
+            let text = format!("{}\n\n{}", file_name(&job.archive), strings::error_message(&e));
+            dialogs::message(hwnd, t::EXTRACT_ERROR_TITLE, &text, MB_ICONERROR);
             return;
         }
     }
@@ -1762,14 +2024,269 @@ unsafe fn on_extracted(hwnd: HWND, lp: LPARAM) {
 /// Puts the normal folder / filter text back in the status bar.
 fn refresh_status() {
     let Some((left, right)) = with_app(|a| {
-        let arc = a.archive.as_ref()?;
+        let right = match (&a.fs, &a.archive) {
+            (Some(fs), _) => fs.summary.clone(),
+            (None, Some(arc)) => arc.summary.clone(),
+            (None, None) => return Some((t::STATUS_READY.to_string(), String::new())),
+        };
         let shown = a.rows.iter().filter(|&&r| r != UP).count();
         let left = if a.query.is_empty() { strings::folder_items(shown) } else { strings::matches(shown, &a.query) };
-        Some((left, arc.summary.clone()))
+        Some((left, right))
     }) else {
         return;
     };
     set_status(&left, &right);
+}
+
+// ------------------------------------------------------------ disk view
+
+/// Selected disk items (or the focused one when nothing is selected).
+fn fs_selection() -> Vec<(PathBuf, fsview::Kind, bool)> {
+    let list = with_app(|a| a.list);
+    let mut rows = selected_rows(list);
+    if rows.is_empty() {
+        rows.extend(focused_row());
+    }
+    with_app(|a| {
+        let Some(fs) = a.fs.as_ref() else { return Vec::new() };
+        rows.iter()
+            .filter_map(|&i| a.rows.get(i).copied())
+            .filter(|&n| n != UP)
+            .filter_map(|n| fs.items.get(n as usize))
+            .map(|it| (it.path.clone(), it.kind, it.archive))
+            .collect()
+    })
+}
+
+/// Context menu for disk items.
+fn fs_context_menu(hwnd: HWND, pt: POINT) {
+    let list = with_app(|a| a.list);
+    let sel: Vec<_> = {
+        let rows = selected_rows(list);
+        if rows.is_empty() { Vec::new() } else { fs_selection() }
+    };
+    let archives: Vec<PathBuf> = sel.iter().filter(|s| s.2).map(|s| s.0.clone()).collect();
+    let busy = with_app(|a| a.job.is_some());
+    unsafe {
+        let menu = CreatePopupMenu().unwrap_or_default();
+        let add = |id: u32, text: &str, enabled: bool| {
+            let flags = if enabled { MF_STRING } else { MF_STRING | MF_GRAYED };
+            let _ = AppendMenuW(menu, flags, id as usize, &HSTRING::from(text));
+        };
+        let sep = || {
+            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+        };
+        if let [(_, kind, archive)] = sel[..] {
+            add(CM_OPEN, if archive { t::CTX_OPEN_ARCHIVE } else { t::CTX_OPEN }, true);
+            if kind == fsview::Kind::File {
+                add(CM_OPEN_WITH, t::CTX_OPEN_WITH, true);
+            }
+            let _ = SetMenuDefaultItem(menu, CM_OPEN, 0);
+        }
+        if !archives.is_empty() {
+            sep();
+            add(CM_FS_EXTRACT_HERE, t::CTX_EXTRACT_HERE, !busy);
+            let folder_label = match &archives[..] {
+                [one] => strings::extract_to_folder(&job::folder_name(one)),
+                _ => t::CTX_EXTRACT_EACH.to_string(),
+            };
+            add(CM_FS_EXTRACT_FOLDER, &folder_label, !busy);
+            add(CM_EXTRACT, t::CTX_EXTRACT, !busy);
+        }
+        if !sel.is_empty() {
+            sep();
+            add(CM_SHOW_IN_EXPLORER, t::CTX_SHOW_IN_EXPLORER, sel.len() == 1);
+            add(CM_COPY_PATH, t::CTX_COPY_PATH, true);
+            add(CM_PROPERTIES, t::CTX_PROPERTIES, sel.len() == 1);
+        } else {
+            add(CM_REFRESH, t::CTX_REFRESH, true);
+        }
+        let cmd = track_menu(menu, hwnd, pt);
+        let _ = DestroyMenu(menu);
+        match cmd {
+            CM_OPEN => {
+                if let Some(i) = focused_or_selected() {
+                    activate(i, false);
+                }
+            }
+            CM_OPEN_WITH => {
+                if let [(path, _, _)] = &sel[..] {
+                    shell_open(hwnd, path, true);
+                }
+            }
+            CM_FS_EXTRACT_HERE => fs_extract(hwnd, archives, crate::cli::Mode::Here),
+            CM_FS_EXTRACT_FOLDER => fs_extract(hwnd, archives, crate::cli::Mode::ToFolder),
+            CM_EXTRACT => fs_extract(hwnd, archives, crate::cli::Mode::Dialog),
+            CM_SHOW_IN_EXPLORER => {
+                if let [(path, kind, _)] = &sel[..] {
+                    show_in_explorer(hwnd, path, *kind);
+                }
+            }
+            CM_COPY_PATH => {
+                let text: Vec<String> = sel.iter().map(|s| s.0.display().to_string()).collect();
+                if set_clipboard_text(hwnd, &text.join("\r\n")) {
+                    let summary = with_app(|a| a.shown.2.clone());
+                    set_status(t::STATUS_PATH_COPIED, &summary);
+                }
+            }
+            CM_PROPERTIES => {
+                if let [(path, _, _)] = &sel[..] {
+                    shell_properties(hwnd, path);
+                }
+            }
+            CM_REFRESH => reload(hwnd),
+            _ => {}
+        }
+    }
+}
+
+/// Extracts whole archives from the disk view, one after another, like
+/// the Explorer context menu does.
+fn fs_extract(hwnd: HWND, archives: Vec<PathBuf>, mode: crate::cli::Mode) {
+    use crate::cli::Mode;
+    if archives.is_empty() || with_app(|a| a.job.is_some()) {
+        return;
+    }
+    let chosen = if mode == Mode::Dialog {
+        let initial = archives[0].parent().map(Path::to_path_buf).unwrap_or_default();
+        ensure_com();
+        let Some(dest) = dialogs::pick_folder(hwnd, &initial) else { return };
+        Some(dest)
+    } else {
+        None
+    };
+    let several = archives.len() > 1;
+    let mut jobs: std::collections::VecDeque<ExtractJob> = archives
+        .into_iter()
+        .map(|archive| {
+            let parent = archive.parent().map(Path::to_path_buf).unwrap_or_default();
+            let name = job::folder_name(&archive);
+            let dest = match (&chosen, mode) {
+                (Some(d), _) if several => Dest::Folder(d.join(&name)),
+                (Some(d), _) => Dest::Folder(d.clone()),
+                (None, Mode::Here) => Dest::Smart { parent, folder_name: name },
+                (None, _) => Dest::Folder(parent.join(name)),
+            };
+            ExtractJob {
+                archive,
+                password: None,
+                ids: None,
+                bases: Vec::new(),
+                dest,
+                verify: true,
+                open_after: None,
+                open_with: false,
+            }
+        })
+        .collect();
+    let first = jobs.pop_front();
+    with_app(|a| a.queue = jobs);
+    if let Some(j) = first {
+        start_extract(hwnd, j);
+    }
+}
+
+/// F5: reads the folder or archive again, keeping the focused row.
+fn reload(hwnd: HWND) {
+    let focused = focused_row();
+    let (place, archive) = with_app(|a| {
+        let place = a.fs.as_ref().map(|f| f.place.clone());
+        let archive = a.archive.as_ref().map(|l| (l.path.clone(), l.password.clone()));
+        (place, archive)
+    });
+    if let Some(place) = place {
+        let select = focused.and_then(|i| {
+            with_app(|a| {
+                let n = *a.rows.get(i)?;
+                a.fs.as_ref()?.items.get(n as usize).map(|it| it.path.clone())
+            })
+        });
+        open_place(hwnd, place, select);
+    } else if let Some((path, password)) = archive {
+        let folder = with_app(|a| a.archive.as_ref().map(|l| l.index.path(a.folder))).unwrap_or_default();
+        let target = if folder.is_empty() { path } else { path.join(folder.replace('/', "\\")) };
+        start_open(hwnd, Target::Path(target), password, None);
+    }
+}
+
+fn show_in_explorer(hwnd: HWND, path: &Path, kind: fsview::Kind) {
+    if kind == fsview::Kind::Place {
+        return shell_open(hwnd, path, false);
+    }
+    ensure_com();
+    let args = HSTRING::from(format!("/select,\"{}\"", path.display()));
+    let mut info = SHELLEXECUTEINFOW {
+        cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+        hwnd,
+        lpFile: w!("explorer.exe"),
+        lpParameters: PCWSTR(args.as_ptr()),
+        nShow: SW_SHOWNORMAL.0,
+        ..Default::default()
+    };
+    let _ = unsafe { ShellExecuteExW(&mut info) };
+}
+
+/// The shell's own properties dialog for a disk item.
+fn shell_properties(hwnd: HWND, path: &Path) {
+    ensure_com();
+    let file = HSTRING::from(path.as_os_str());
+    let mut info = SHELLEXECUTEINFOW {
+        cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+        fMask: SEE_MASK_INVOKEIDLIST,
+        hwnd,
+        lpVerb: w!("properties"),
+        lpFile: PCWSTR(file.as_ptr()),
+        nShow: SW_SHOWNORMAL.0,
+        ..Default::default()
+    };
+    let _ = unsafe { ShellExecuteExW(&mut info) };
+}
+
+// ------------------------------------------------------------ path bar
+
+/// Keyboard in the path bar: Enter goes to the typed path (a folder, an
+/// archive, or a folder inside an archive), Esc puts the current one back.
+unsafe extern "system" fn path_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _id: usize, _data: usize) -> LRESULT {
+    unsafe {
+        match msg {
+            WM_KEYDOWN if wp.0 as u16 == VK_RETURN.0 => {
+                let mut buf = vec![0u16; 2048];
+                let n = GetWindowTextW(hwnd, &mut buf) as usize;
+                let text = String::from_utf16_lossy(&buf[..n]);
+                let text = text.trim().trim_matches('"');
+                let main = GetParent(hwnd).unwrap_or_default();
+                let list = with_app(|a| a.list);
+                if !text.is_empty() {
+                    let target = if text.eq_ignore_ascii_case(t::COMPUTER) {
+                        Target::Place(fsview::Place::Computer)
+                    } else {
+                        Target::Path(PathBuf::from(text))
+                    };
+                    with_app(|a| a.shown.0.clear());
+                    start_open(main, target, None, None);
+                }
+                let _ = SetFocus(Some(list));
+                return LRESULT(0);
+            }
+            WM_KEYDOWN if wp.0 as u16 == VK_ESCAPE.0 => {
+                let (list, shown) = with_app(|a| (a.list, a.shown.0.clone()));
+                let _ = SetWindowTextW(hwnd, &HSTRING::from(shown));
+                let _ = SetFocus(Some(list));
+                return LRESULT(0);
+            }
+            WM_CHAR if matches!(wp.0, 0x0D | 0x1B) => return LRESULT(0),
+            _ => {}
+        }
+        DefSubclassProc(hwnd, msg, wp, lp)
+    }
+}
+
+fn focus_path_bar() {
+    let bar = with_app(|a| a.path_label);
+    unsafe {
+        let _ = SetFocus(Some(bar));
+    }
+    send(bar, EM_SETSEL, 0, -1);
 }
 
 // ------------------------------------------------------------ painting
@@ -1779,7 +2296,6 @@ fn fill_row(di: &mut NMLVDISPINFOW) {
     APP.with(|cell| {
         let Ok(mut guard) = cell.try_borrow_mut() else { return };
         let app = &mut *guard;
-        let Some(arc) = &app.archive else { return };
         let Some(&node) = app.rows.get(di.item.iItem as usize) else { return };
         let wants_image = di.item.mask.0 & LVIF_IMAGE.0 != 0;
         let wants_text = di.item.mask.0 & LVIF_TEXT.0 != 0;
@@ -1794,6 +2310,32 @@ fn fill_row(di: &mut NMLVDISPINFOW) {
             return;
         }
 
+        if let Some(fs) = &app.fs {
+            let Some(it) = fs.items.get(node as usize) else { return };
+            if wants_image {
+                di.item.iImage = if it.icon >= 0 {
+                    it.icon
+                } else if it.is_container() {
+                    app.icons.folder()
+                } else {
+                    app.icons.file(&it.name)
+                };
+            }
+            if wants_text {
+                let text = match di.item.iSubItem {
+                    0 => it.name.clone(),
+                    1 if !it.size_text.is_empty() => it.size_text.clone(),
+                    1 => format::size(it.size),
+                    2 => it.extra.clone(),
+                    3 => format::date(it.modified),
+                    _ => String::new(),
+                };
+                copy_text(&text, di.item.pszText, di.item.cchTextMax);
+            }
+            return;
+        }
+
+        let Some(arc) = &app.archive else { return };
         let index = &arc.index;
         let is_dir = index.is_dir(node);
         let entry = index.entry(node).map(|id| &arc.reader.entries()[id as usize]);

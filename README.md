@@ -2,7 +2,7 @@
 
 A fast, lightweight archive manager for Windows, written in Rust.
 
-Status: **v0.1 in progress — step 8 of 10** (main window, context-menu modes, Windows integration, in-app context menu and drag-out extraction).
+Status: **v0.1 in progress — step 9 of 10** (main window, context-menu modes, Windows integration, in-app context menu, drag-out extraction and disk navigation).
 
 ## Layout
 
@@ -19,17 +19,25 @@ Files opened from an archive go to `%TEMP%\Kibotos\<process>`, removed on exit (
 
 Set `KIBOTOS_TIMING=<file>` to log startup timings (milliseconds since process creation) to that file.
 
+## Disk navigation
+
+Without an argument the window starts in **Este equipo** (Desktop, Downloads, Documents and the drives). Folders open in the window, archives open inside Kibotós and other files open with their program. Backspace at an archive's root returns to the folder that holds it, and keeps going up to the drive and *Este equipo*. The filter applies to the current folder on disk and to the whole archive inside one. Folder listings are read on a worker thread; hidden and system files are not shown.
+
+The path bar (Ctrl+L or Alt+D) accepts a folder, an archive, or a folder inside an archive, such as `D:\Descargasotos.zip6`. On disk, the context menu offers *Extraer aquí*, *Extraer en «nombre\»* and *Extraer...* for one or several archives (extracted one after another), *Mostrar en el Explorador*, *Copiar ruta* and the shell's *Propiedades*. The disk view never moves, renames or deletes files: dragging files out of it copies them.
+
 ## Keyboard
 
 | Key | Action |
 |---|---|
 | Enter / double-click | Open a folder, or open a file with its program (extracted to a temporary folder) |
 | Ctrl+Enter | On a filter result: show it in its folder |
-| Backspace / Alt+Up | Up one folder (or leave the filter) |
+| Backspace / Alt+Up | Up one folder (or leave the filter); from an archive's root to its folder on disk |
 | Typing in the list, Ctrl+F | Filter names across the whole archive |
 | Ctrl+E | Extract the selection, or the whole folder / filter result if nothing is selected |
 | Esc | Clear the filter; cancel an extraction in the progress window |
 | Ctrl+O | Open an archive |
+| Ctrl+L, Alt+D | Type a path in the path bar |
+| F5 | Read the folder or archive again |
 | Ctrl+A | Select all rows |
 | Alt+Enter | Properties of the selection (sizes, ratio, date, CRC, encryption) |
 | Menu key, Shift+F10, right-click | Context menu: Abrir, Abrir con..., Extraer..., Extraer junto al comprimido, Mostrar en su carpeta, Copiar ruta, Propiedades |
@@ -49,7 +57,7 @@ Used by the Explorer context menu (step 7); they never open the main window, onl
 
 | Command | Extracts to |
 |---|---|
-| `kibotos.exe archive` | (opens the main window) |
+| `kibotos.exe [archive or folder]` | (opens the main window) |
 | `kibotos.exe --extract-here archive...` | Next to the archive; into a folder named after it if the archive has several loose items at its root |
 | `kibotos.exe --extract-to-folder archive...` | `<archive folder>\<archive name>\` |
 | `kibotos.exe --extract-dialog archive...` | A folder chosen in a dialog |

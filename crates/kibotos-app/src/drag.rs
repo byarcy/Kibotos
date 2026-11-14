@@ -370,3 +370,46 @@ fn notified_paths(wp: WPARAM, lp: LPARAM) -> Vec<PathBuf> {
     }
     out
 }
+
+// ------------------------------------------------------------ disk files
+
+/// Drop source for real files: the target does the copy.
+#[implement(IDropSource)]
+struct FileSource {
+    own: HWND,
+}
+
+impl IDropSource_Impl for FileSource_Impl {
+    fn QueryContinueDrag(&self, escape: BOOL, keys: MODIFIERKEYS_FLAGS) -> HRESULT {
+        if escape.as_bool() {
+            return DRAGDROP_S_CANCEL;
+        }
+        if keys.0 & MK_LBUTTON.0 != 0 {
+            return S_OK;
+        }
+        if target_at_cursor(self.own) == Target::Own { DRAGDROP_S_CANCEL } else { DRAGDROP_S_DROP }
+    }
+
+    fn GiveFeedback(&self, _effect: DROPEFFECT) -> HRESULT {
+        DRAGDROP_S_USEDEFAULTCURSORS
+    }
+}
+
+/// Drags files from the disk view; the drop target copies them (the disk
+/// view never moves or deletes anything).
+pub fn files(own: HWND, list: HWND, pt: POINT, files: &[PathBuf]) {
+    unsafe {
+        let _ = OleInitialize(None);
+        let Ok(data) = SHCreateDataObject::<_, IDataObject>(None, None, None) else { return };
+        if set_files(&data, files).is_err() {
+            return;
+        }
+        let _ = set_preferred_effect(&data, DROPEFFECT_COPY);
+        if let Ok(helper) = CoCreateInstance::<_, IDragSourceHelper>(&CLSID_DragDropHelper, None, CLSCTX_INPROC_SERVER) {
+            let _ = helper.InitializeFromWindow(Some(list), Some(&pt), &data);
+        }
+        let source: IDropSource = FileSource { own }.into();
+        let mut effect = DROPEFFECT_NONE;
+        let _ = DoDragDrop(&data, &source, DROPEFFECT_COPY, &mut effect);
+    }
+}

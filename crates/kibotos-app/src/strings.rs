@@ -23,6 +23,12 @@ pub mod es {
 
     pub const UP_ROW: &str = "..";
     pub const FILTER_CUE: &str = "Filtrar en todo el archivo (Ctrl+F)";
+    pub const FILTER_CUE_FOLDER: &str = "Filtrar en esta carpeta (Ctrl+F)";
+    pub const COL_TYPE: &str = "Tipo";
+    pub const COMPUTER: &str = "Este equipo";
+    pub const KNOWN_FOLDER: &str = "Carpeta";
+    pub const TYPE_ARCHIVE: &str = "Archivo comprimido";
+    pub const FOLDER_ERROR_TITLE: &str = "No se pudo abrir la carpeta";
 
     pub const STATUS_READY: &str = "Arrastra un archivo comprimido aquí o pulsa Ctrl+O para abrirlo.";
     pub const STATUS_OPENING: &str = "Abriendo...";
@@ -94,6 +100,11 @@ pub mod es {
     pub const CTX_LOCATE: &str = "&Mostrar en su carpeta\tCtrl+Enter";
     pub const CTX_COPY_PATH: &str = "Copiar &ruta";
     pub const CTX_PROPERTIES: &str = "&Propiedades\tAlt+Enter";
+    pub const CTX_OPEN_ARCHIVE: &str = "&Abrir en Kibotós	Enter";
+    pub const CTX_EXTRACT_HERE: &str = "Extraer a&quí";
+    pub const CTX_EXTRACT_EACH: &str = "Extraer cada uno en una carpeta con su &nombre";
+    pub const CTX_SHOW_IN_EXPLORER: &str = "Mostrar en el E&xplorador";
+    pub const CTX_REFRESH: &str = "Ac&tualizar	F5";
     pub const STATUS_PATH_COPIED: &str = "Ruta copiada al portapapeles.";
 
     // Properties
@@ -213,6 +224,15 @@ pub fn ratio(packed: u64, size: u64) -> String {
 
 pub fn selection_count(n: usize) -> String {
     if n == 1 { "1 elemento".into() } else { format!("{} elementos seleccionados", number(n as u64)) }
+}
+
+pub fn extract_to_folder(name: &str) -> String {
+    format!(r"Extraer en «{name}\»")
+}
+
+/// "120,3 GB libres" for a drive.
+pub fn drive_free(free: u64) -> String {
+    format!("{} libres", bytes(free))
 }
 
 pub fn opened(name: &str) -> String {
