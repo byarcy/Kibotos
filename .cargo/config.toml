@@ -1,0 +1,4 @@
+# Static C runtime: the release .exe must run on a clean Windows without the
+# Visual C++ Redistributable (Rust std, unRAR's C++ code and zstd all link it).
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

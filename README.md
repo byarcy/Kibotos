@@ -2,7 +2,7 @@
 
 A fast, lightweight archive manager for Windows, written in Rust.
 
-Status: **v0.1 in progress — step 1 of 8** (core library and console tool; no window yet).
+Status: **v0.1 in progress — step 2 of 8** (core library, console tool, main window with the archive list).
 
 ## Layout
 
@@ -10,9 +10,12 @@ Status: **v0.1 in progress — step 1 of 8** (core library and console tool; no 
 |---|---|
 | `crates/kibotos-core` | Format backends behind one `ArchiveReader` trait, the in-memory folder index, path validation and extraction. No UI code. |
 | `crates/kibotos-core/src/bin/kibotos-cli.rs` | Console tool to list and extract archives with timings. |
+| `crates/kibotos-app` | `kibotos.exe`: native Win32 window with a virtual ListView. UI text lives in `src/strings.rs`. |
 | `licenses/unRAR-license.txt` | License of the unRAR code used to read RAR archives. |
 
-`kibotos-app` (the Win32 window and Windows integration) arrives in step 2.
+The release build is a single `kibotos.exe` with the C runtime linked statically (see `.cargo/config.toml`), so it needs no Visual C++ Redistributable.
+
+Set `KIBOTOS_TIMING=<file>` to log startup timings (milliseconds since process creation) to that file.
 
 ## Formats (read and extract)
 
