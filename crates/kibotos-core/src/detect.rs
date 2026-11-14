@@ -36,6 +36,16 @@ impl Codec {
         }
     }
 
+    /// A decoder reading a whole file: `.xz` files made of several blocks
+    /// are decoded on several threads.
+    pub(crate) fn file_decoder(self, file: io::BufReader<std::fs::File>) -> io::Result<Box<dyn Read>> {
+        match self {
+            // Nothing has been read yet, so the buffer is empty.
+            Codec::Xz => crate::xzmt::decoder(file.into_inner()),
+            _ => self.decoder(file),
+        }
+    }
+
     /// Wraps a reader in the matching decoder.
     pub(crate) fn decoder<'a, R: Read + 'a>(self, r: R) -> io::Result<Box<dyn Read + 'a>> {
         Ok(match self {

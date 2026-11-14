@@ -38,5 +38,5 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_
 [dev-dependencies]
 tempfile = "3"
 sevenz-rust2 = { version = "0.25", default-features = false, features = ["aes256", "compress"] }
-lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "xz", "encoder"] }
+lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "xz", "encoder", "optimization"] }
 zstd = { version = "0.14", default-features = false }

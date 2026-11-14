@@ -2,7 +2,7 @@
 
 A fast, lightweight archive manager for Windows, written in Rust.
 
-Status: **v0.1 in progress — step 9 of 10** (main window, context-menu modes, Windows integration, in-app context menu, drag-out extraction and disk navigation).
+Status: **v0.1** — viewer and extractor, all 10 steps done. Archive creation is planned for v0.2. The deliverable is `dist\kibotos-v0.1.exe` (see *Build and test*).
 
 ## Layout
 
@@ -82,9 +82,40 @@ ZIP (and jar, apk, cbz), 7z, RAR (and cbr), tar, gz, tgz, bz2, xz, zst and the `
 
 RAR support is **extraction only** and always will be: the unRAR license forbids using its code to create a RAR-compatible compressor.
 
+## Performance
+
+Measured on the release build run from an NVMe SSD (Windows 11, 12 logical cores; medians of 10 cold starts). Times are from process creation as Windows records it (`KIBOTOS_TIMING`).
+
+| Target | Result |
+|---|---|
+| Cold start under 100 ms | Window visible in **56 ms**; *Este equipo* listed at 106 ms |
+| List a 100,000-entry ZIP under 300 ms | **77 ms** to open, index and sort on the worker thread; rows on screen 131 ms after launch |
+| Filter under 16 ms per keystroke | **2–15 ms** on 100,000 entries (worst case: every row matches), 8–11 ms of it repainting the list |
+| Single .exe under 5 MB, no runtime dependencies | **1.9 MB**, C runtime linked statically |
+
+Sorting by another column takes 1–6 ms: the name order is computed once (on several threads) and other keys only compare integers, with names as tie-breaker; reversing a column needs no sort at all. Multi-block `.xz` files (from `xz -T` or 7-Zip) decode on several threads when the file's index shows every block is small; memory stays under 512 MiB.
+
+Extraction compared with 7-Zip 26.05 on the same SSD (`kibotos-cli extract` vs `7z x`):
+
+| Archive | Kibotós | 7-Zip |
+|---|---|---|
+| ZIP, 100,000 small files | 34 s | 90 s |
+| ZIP, 37 MB with many files | 4.4 s | 11.9 s |
+| 7z, 12 MB | 0.65 s | 0.56 s |
+| xz, 105 MB to 323 MB, 13 blocks | 1.0 s | 0.7 s |
+| gz, 323 MB of text | 1.0 s | 2.2 s |
+
+Running the .exe from a mechanical disk makes extraction 2–3 times slower for any version (antivirus scanning on a slow disk), so keep it on an SSD.
+
 ## Build and test
 
 Requires Rust stable and the MSVC Build Tools (C++ workload).
+
+```powershell
+.\package.ps1
+```
+
+builds the release and writes `dist\kibotos-v<version>.exe` (version from `Cargo.toml`, e.g. `kibotos-v0.1.exe`).
 
 ```bash
 cargo test -p kibotos-core

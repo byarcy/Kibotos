@@ -52,5 +52,5 @@ fn main() {
     // Otherwise the first argument, if any, is an archive or folder to open
     // (Explorer passes "%1"; dragging a file onto the .exe does the same).
     // Without one, the window starts in "Este equipo".
-    window::run(args.into_iter().next().map(PathBuf::from));
+    window::run(args.into_iter().next().filter(|a| !a.is_empty()).map(PathBuf::from));
 }

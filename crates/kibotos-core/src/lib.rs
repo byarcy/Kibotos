@@ -23,6 +23,7 @@ pub mod safety;
 mod sink;
 mod time;
 pub mod view;
+mod xzmt;
 pub mod zone;
 
 use std::path::Path;

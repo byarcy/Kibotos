@@ -84,7 +84,7 @@ impl ArchiveReader for SingleBackend {
         }
         let mut pump = Pump::new(ctl, self.len);
         let (file, _) = open_file(&self.path)?;
-        let mut dec = self.codec.decoder(file).map_err(Error::from_read)?;
+        let mut dec = self.codec.file_decoder(file).map_err(Error::from_read)?;
         pump.run(&self.entries[0], &mut dec, sink, &Error::from_read)
     }
 }

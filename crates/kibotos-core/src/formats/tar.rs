@@ -59,7 +59,7 @@ impl TarBackend {
                 walk(ar.entries_with_seek().map_err(map_tar)?, |o, it| list(o, it))?;
             }
             Some(c) => {
-                let mut ar = tar::Archive::new(c.decoder(file)?);
+                let mut ar = tar::Archive::new(c.file_decoder(file)?);
                 walk(ar.entries().map_err(map_tar)?, |o, it| list(o, it))?;
             }
         }
@@ -134,7 +134,7 @@ impl ArchiveReader for TarBackend {
                 walk(ar.entries_with_seek().map_err(map_tar)?, |o, it| visit(o, it))
             }
             Some(c) => {
-                let mut ar = tar::Archive::new(c.decoder(file)?);
+                let mut ar = tar::Archive::new(c.file_decoder(file)?);
                 walk(ar.entries().map_err(map_tar)?, |o, it| visit(o, it))
             }
         }

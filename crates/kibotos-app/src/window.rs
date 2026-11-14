@@ -104,6 +104,9 @@ struct Loaded {
     password: Option<String>,
     reader: Box<dyn ArchiveReader>,
     index: ArchiveIndex,
+    /// Ascending name order: the tie-breaker for other keys.
+    names: Ordering,
+    /// The order on screen.
     ord: Ordering,
     open_ms: f64,
     summary: String,
@@ -859,7 +862,9 @@ fn open_archive(target: isize, path: PathBuf, password: Option<String>, sort: So
     kibotos_core::open(&path, &opts).map(|reader| {
         let index = ArchiveIndex::build(reader.entries());
         prefetch_icons(target, &index);
-        let ord = Ordering::new(&index, reader.entries(), sort);
+        let names = Ordering::by_name(&index);
+        let asc = Ordering::by_key(&index, reader.entries(), sort.key, &names);
+        let ord = if sort.descending { asc.reversed(&index) } else { asc };
         let open_ms = t0.elapsed().as_secs_f64() * 1000.0;
         let entries = reader.entries();
         let files = entries.iter().filter(|e: &&Entry| e.kind == EntryKind::File).count();
@@ -869,7 +874,7 @@ fn open_archive(target: isize, path: PathBuf, password: Option<String>, sort: So
             strings::opened_in(reader.format().name(), entries.len(), open_ms),
             strings::items_summary(files, dirs)
         );
-        Loaded { path, password, reader, index, ord, open_ms, summary }
+        Loaded { path, password, reader, index, names, ord, open_ms, summary }
     })
 }
 
@@ -1273,7 +1278,13 @@ fn sort_by(key: SortKey) {
         };
         let sort = a.sort;
         if let Some(arc) = a.archive.as_mut() {
-            arc.ord = Ordering::new(&arc.index, arc.reader.entries(), sort);
+            // Same column: reverse the current order; another: integer keys
+            // with the name order as tie-breaker. No string sorting here.
+            arc.ord = if arc.ord.sort.key == sort.key {
+                arc.ord.reversed(&arc.index)
+            } else {
+                Ordering::by_key(&arc.index, arc.reader.entries(), sort.key, &arc.names)
+            };
         }
         a.rows_query.clear();
     });

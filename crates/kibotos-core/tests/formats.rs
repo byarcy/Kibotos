@@ -480,6 +480,33 @@ fn extract_folder_relative_to_base() {
 }
 
 #[test]
+fn multi_block_xz_decodes_in_parallel() {
+    // Several 1 MiB blocks, like `xz -T` output: decoded on several threads.
+    let dir = TempDir::new().unwrap();
+    let mut data = noise(1 << 20);
+    data.extend(b"texto repetido ".repeat(300_000));
+    data.extend(noise(700_000));
+    let mut opts = lzma_rust2::XzOptions::with_preset(1);
+    opts.block_size = std::num::NonZeroU64::new(1 << 20);
+    let mut w = lzma_rust2::XzWriterMt::new(Vec::new(), opts, 2).unwrap();
+    w.write_all(&data).unwrap();
+    let xz = w.finish().unwrap();
+    let p = dir.path().join("datos.bin.xz");
+    std::fs::write(&p, &xz).unwrap();
+
+    let mut r = open(&p);
+    let out = extract_all(r.as_mut());
+    assert_eq!(out.len(), 1);
+    assert!(out.values().next().unwrap() == &data);
+
+    // A truncated file fails cleanly instead of hanging or panicking.
+    std::fs::write(&p, &xz[..xz.len() - 100]).unwrap();
+    if let Ok(mut r) = kibotos_core::open(&p, &OpenOptions::default()) {
+        assert!(r.extract_all(&mut MemorySink::new(), &Control::new()).is_err());
+    }
+}
+
+#[test]
 fn extract_items_from_several_folders_by_name() {
     // Filter results from different folders, dragged out together.
     let dir = TempDir::new().unwrap();
