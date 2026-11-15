@@ -89,7 +89,7 @@ pub struct Listing {
     pub items: Vec<Item>,
     pub summary: String,
     /// Icons looked up on the worker: (folder icon, icons by extension).
-    pub icons: (i32, Vec<(String, i32)>),
+    pub icons: (Option<i32>, Vec<(String, i32)>),
 }
 
 /// Extensions Kibotós opens itself (others open with their program).

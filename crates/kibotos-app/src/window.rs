@@ -544,8 +544,14 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 LRESULT(0)
             }
             WM_APP_ICONS => {
-                let (folder, icons) = *Box::from_raw(lp.0 as *mut (i32, Vec<(String, i32)>));
+                let (folder, icons) = *Box::from_raw(lp.0 as *mut (Option<i32>, Vec<(String, i32)>));
                 with_app(|a| a.icons.warm(folder, icons));
+                // If the image list could not be set at load time, the icons
+                // are ready now: try again.
+                let (list, set) = with_app(|a| (a.list, a.image_list_set));
+                if !set && set_image_list(list) {
+                    let _ = InvalidateRect(Some(list), None, false);
+                }
                 LRESULT(0)
             }
             WM_SETFOCUS => {
@@ -823,6 +829,7 @@ fn start_open(hwnd: HWND, target: Target, password: Option<String>, select: Opti
         a.generation += 1;
         (a.generation, a.sort)
     });
+    timing::mark("open start", "");
     let archive_like = matches!(&target, Target::Path(p) if fsview::is_archive_name(&p.to_string_lossy()));
     if archive_like {
         set_status(t::STATUS_OPENING, "");
@@ -937,10 +944,7 @@ unsafe fn on_loaded(hwnd: HWND, lp: LPARAM) {
         if !has_images {
             // First use of the shell icon list happens after the window is
             // already visible, so it does not delay startup.
-            ensure_com();
-            let images = IconCache::system_list();
-            send(list, LVM_SETIMAGELIST, LVSIL_SMALL as usize, images.0);
-            with_app(|a| a.image_list_set = true);
+            set_image_list(list);
         }
 
         let title = match opened {
@@ -997,6 +1001,17 @@ unsafe fn on_loaded(hwnd: HWND, lp: LPARAM) {
         }
         let _ = UpdateWindow(list);
     }
+}
+
+/// Gives the list the system icons. The shell can fail to hand out its
+/// image list while a worker thread is looking up icons at the same moment,
+/// so this is retried until it succeeds.
+fn set_image_list(list: HWND) -> bool {
+    ensure_com();
+    let Some(images) = IconCache::system_list() else { return false };
+    send(list, LVM_SETIMAGELIST, LVSIL_SMALL as usize, images.0);
+    with_app(|a| a.image_list_set = true);
+    true
 }
 
 /// Column titles and filter hint for archive or disk views.
