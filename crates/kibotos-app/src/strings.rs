@@ -32,6 +32,7 @@ pub mod es {
 
     pub const STATUS_READY: &str = "Arrastra un archivo comprimido aquí o pulsa Ctrl+O para abrirlo.";
     pub const STATUS_OPENING: &str = "Abriendo...";
+    pub const STATUS_READING: &str = "Leyendo la carpeta... (Esc para cancelar)";
 
     pub const OPEN_TITLE: &str = "Abrir archivo comprimido";
     pub const FILTER_ARCHIVES: &str = "Archivos comprimidos";

@@ -166,6 +166,9 @@ struct App {
     close_pending: bool,
     /// A drag dropped on the shell: waiting to learn the folder.
     drop_wait: Option<(drag::Watch, Pick)>,
+    /// A folder or archive is being read: the list ignores clicks and keys
+    /// (which would act on the old view) until it arrives; Esc cancels.
+    loading: bool,
     /// Folder an extraction is writing to, refreshed in Explorer.
     shell_dir: Option<PathBuf>,
     /// An extraction the UI waits for in a nested loop (drop on another
@@ -671,6 +674,25 @@ unsafe fn on_notify(lp: LPARAM) -> LRESULT {
 /// filter, and typing a character starts filtering.
 unsafe extern "system" fn list_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _id: usize, _data: usize) -> LRESULT {
     unsafe {
+        if with_app(|a| a.loading) {
+            match msg {
+                WM_SETCURSOR if (lp.0 & 0xFFFF) as u32 == HTCLIENT => {
+                    if let Ok(c) = LoadCursorW(None, IDC_APPSTARTING) {
+                        SetCursor(Some(c));
+                    }
+                    return LRESULT(1);
+                }
+                WM_KEYDOWN if wp.0 as u16 == VK_ESCAPE.0 => {
+                    cancel_loading();
+                    return LRESULT(0);
+                }
+                // Clicks and keys would select or open rows of the view
+                // that is about to be replaced. Scrolling stays allowed.
+                WM_LBUTTONDOWN | WM_LBUTTONDBLCLK | WM_RBUTTONDOWN | WM_RBUTTONDBLCLK | WM_MBUTTONDOWN
+                | WM_KEYDOWN | WM_CHAR | WM_SYSKEYDOWN | WM_CONTEXTMENU => return LRESULT(0),
+                _ => {}
+            }
+        }
         match msg {
             WM_KEYDOWN => {
                 let vk = wp.0 as u16;
@@ -830,10 +852,10 @@ fn start_open(hwnd: HWND, target: Target, password: Option<String>, select: Opti
         (a.generation, a.sort)
     });
     timing::mark("open start", "");
+    with_app(|a| a.loading = true);
     let archive_like = matches!(&target, Target::Path(p) if fsview::is_archive_name(&p.to_string_lossy()));
-    if archive_like {
-        set_status(t::STATUS_OPENING, "");
-    }
+    set_status(if archive_like { t::STATUS_OPENING } else { t::STATUS_READING }, "");
+    update_cursor();
     let hwnd_raw = hwnd.0 as isize;
     std::thread::spawn(move || {
         let t0 = Instant::now();
@@ -914,6 +936,31 @@ fn prefetch_icons(target: isize, index: &ArchiveIndex) {
     });
 }
 
+/// Esc while a folder or archive is being read: stay in the current view.
+/// The worker keeps going, but its result is dropped (old generation).
+fn cancel_loading() {
+    with_app(|a| {
+        a.generation += 1;
+        a.loading = false;
+    });
+    update_cursor();
+    refresh_status();
+}
+
+/// Shows the "working in background" cursor over the list while loading.
+fn update_cursor() {
+    unsafe {
+        let mut pt = POINT::default();
+        let (list, loading) = with_app(|a| (a.list, a.loading));
+        if GetCursorPos(&mut pt).is_ok() && WindowFromPoint(pt) == list {
+            let id = if loading { IDC_APPSTARTING } else { IDC_ARROW };
+            if let Ok(c) = LoadCursorW(None, id) {
+                SetCursor(Some(c));
+            }
+        }
+    }
+}
+
 unsafe fn on_loaded(hwnd: HWND, lp: LPARAM) {
     unsafe {
         let msg = Box::from_raw(lp.0 as *mut LoadMsg);
@@ -921,6 +968,8 @@ unsafe fn on_loaded(hwnd: HWND, lp: LPARAM) {
         if msg.generation != current {
             return;
         }
+        with_app(|a| a.loading = false);
+        update_cursor();
         let opened = match msg.result {
             Ok(o) => o,
             // Encrypted file names (7z, RAR): ask and open again.
@@ -1125,6 +1174,9 @@ fn ctrl_down() -> bool {
 /// Enter or double-click on a row. Folders open; files open with their
 /// program. `locate` (Ctrl+Enter) shows a filter result in its folder.
 fn activate(row: usize, locate: bool) {
+    if with_app(|a| a.loading) {
+        return; // the row belongs to the view being replaced
+    }
     let hwnd = with_app(|a| unsafe { GetParent(a.list) }.unwrap_or_default());
     // Disk view: folders and drives open here, archives open in Kibotós,
     // other files with their program.
