@@ -43,9 +43,25 @@ fn known_size(file: &mut Source, codec: Codec) -> Option<u64> {
             let n = file.read(&mut head).ok()?;
             zstd::zstd_safe::get_frame_content_size(&head[..n]).ok().flatten()
         }
-        // gzip stores the size modulo 4 GiB of the *last* member only, and
-        // bzip2 stores nothing: both are unknown until decompressed.
-        Codec::Gzip | Codec::Bzip2 => None,
+        Codec::Lzma => {
+            let mut head = [0u8; 13];
+            file.seek(SeekFrom::Start(0)).ok()?;
+            file.read_exact(&mut head).ok()?;
+            let size = u64::from_le_bytes(head[5..13].try_into().ok()?);
+            (size != u64::MAX).then_some(size)
+        }
+        Codec::Lzip => {
+            // A one-member file ends with: CRC32, data size, member size.
+            let len = file.seek(SeekFrom::End(0)).ok()?;
+            let mut trailer = [0u8; 20];
+            file.seek(SeekFrom::Start(len.checked_sub(20)?)).ok()?;
+            file.read_exact(&mut trailer).ok()?;
+            let member = u64::from_le_bytes(trailer[12..20].try_into().ok()?);
+            (member == len).then(|| u64::from_le_bytes(trailer[4..12].try_into().unwrap()))
+        }
+        // gzip stores the size modulo 4 GiB of the *last* member only;
+        // bzip2, .Z and lz4 frames (usually) store nothing.
+        Codec::Gzip | Codec::Bzip2 | Codec::Compress | Codec::Lz4 => None,
     }
 }
 

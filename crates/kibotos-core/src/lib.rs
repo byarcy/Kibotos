@@ -18,6 +18,7 @@ mod entry;
 mod error;
 mod formats;
 mod index;
+mod lzw;
 mod pump;
 pub mod safety;
 mod sink;

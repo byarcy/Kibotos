@@ -28,7 +28,8 @@ tar = { version = "0.4.46", default-features = false }
 flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
 bzip2 = "0.6"
 zstd = { version = "0.14", default-features = false }
-lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "xz", "optimization"] }
+lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "xz", "lzip", "optimization"] }
+lz4_flex = { version = "0.14", default-features = false, features = ["std", "frame", "safe-decode", "checked-decode"] }
 
 [target.'cfg(windows)'.dependencies]
 # Official unRAR source (extraction only). See licenses/unRAR-license.txt.
@@ -38,5 +39,6 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_
 [dev-dependencies]
 tempfile = "3"
 sevenz-rust2 = { version = "0.25", default-features = false, features = ["aes256", "compress"] }
-lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "xz", "encoder", "optimization"] }
+lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "xz", "lzip", "encoder", "optimization"] }
+lz4_flex = { version = "0.14", default-features = false, features = ["std", "frame", "safe-encode", "safe-decode"] }
 zstd = { version = "0.14", default-features = false }

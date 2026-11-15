@@ -114,8 +114,28 @@ fn compress(codec: Codec, data: &[u8]) -> Vec<u8> {
             e.finish().unwrap()
         }
         Codec::Zstd => zstd::encode_all(data, 3).unwrap(),
+        Codec::Lz4 => {
+            let mut e = lz4_flex::frame::FrameEncoder::new(Vec::new());
+            e.write_all(data).unwrap();
+            e.finish().unwrap()
+        }
+        Codec::Lzma => {
+            let opts = lzma_rust2::LzmaOptions::with_preset(1);
+            let mut e = lzma_rust2::LzmaWriter::new_use_header(Vec::new(), &opts, Some(data.len() as u64)).unwrap();
+            e.write_all(data).unwrap();
+            e.finish().unwrap()
+        }
+        Codec::Lzip => {
+            let mut e = lzma_rust2::LzipWriter::new(Vec::new(), lzma_rust2::LzipOptions::with_preset(1));
+            e.write_all(data).unwrap();
+            e.finish().unwrap()
+        }
+        Codec::Compress => panic!("no .Z encoder: use the sample.tar.Z fixture"),
     }
 }
+
+/// Codecs the tests can compress with.
+const ENCODABLE: [Codec; 7] = [Codec::Gzip, Codec::Bzip2, Codec::Xz, Codec::Zstd, Codec::Lz4, Codec::Lzma, Codec::Lzip];
 
 fn make_7z(path: &Path, password: Option<&str>, solid: bool) {
     use sevenz_rust2::{ArchiveEntry, ArchiveWriter, Password};
@@ -222,11 +242,33 @@ fn tar_all_codecs() {
     let p = dir.path().join("a.tar");
     std::fs::write(&p, &tar).unwrap();
     check_roundtrip(&p, Format::Tar(None));
-    for codec in [Codec::Gzip, Codec::Bzip2, Codec::Xz, Codec::Zstd] {
+    for codec in ENCODABLE {
         let p = dir.path().join(format!("a.tar.{}", codec.name()));
         std::fs::write(&p, compress(codec, &tar)).unwrap();
         check_roundtrip(&p, Format::Tar(Some(codec)));
     }
+}
+
+#[test]
+fn unix_compress_fixture() {
+    // Made by a compress.c-style encoder and checked with 7-Zip.
+    let mut r = open(&fixture("sample.tar.Z"));
+    assert_eq!(r.format(), Format::Tar(Some(Codec::Compress)));
+    let out = extract_all(r.as_mut());
+    assert_eq!(out["leeme.txt"], b"hola desde compress\n".repeat(40));
+    assert_eq!(out["dir/datos.csv"], b"a,b,c\n".repeat(700));
+    assert_eq!(out["dir/ñ.txt"], "ñandú\n".as_bytes());
+}
+
+#[test]
+fn lzma_detection_needs_valid_data() {
+    let dir = TempDir::new().unwrap();
+    // Looks like an .lzma header but does not decode.
+    let mut fake = vec![0x5D, 0, 0, 0x10, 0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
+    fake.extend(std::iter::repeat_n(0xAB, 600));
+    let p = dir.path().join("fake.lzma");
+    std::fs::write(&p, &fake).unwrap();
+    assert!(matches!(kibotos_core::detect_path(&p), Err(Error::UnknownFormat)));
 }
 
 #[test]
@@ -241,14 +283,14 @@ fn tgz_by_content_not_extension() {
 fn single_compressed_files() {
     let dir = TempDir::new().unwrap();
     let data = noise(100_000);
-    for codec in [Codec::Gzip, Codec::Bzip2, Codec::Xz, Codec::Zstd] {
+    for codec in ENCODABLE {
         let p = dir.path().join(format!("notes.txt.{}", codec.extensions_for_tests()));
         std::fs::write(&p, compress(codec, &data)).unwrap();
         let mut r = open(&p);
         assert_eq!(r.format(), Format::Compressed(codec));
         assert_eq!(r.entries().len(), 1);
         assert_eq!(&*r.entries()[0].path, "notes.txt");
-        if matches!(codec, Codec::Xz | Codec::Zstd) {
+        if matches!(codec, Codec::Xz | Codec::Zstd | Codec::Lzma | Codec::Lzip) {
             assert_eq!(r.entries()[0].size, Some(data.len() as u64), "{codec:?}");
         }
         assert_eq!(extract_all(r.as_mut())["notes.txt"], data);
@@ -265,6 +307,10 @@ impl TestExt for Codec {
             Codec::Bzip2 => "bz2",
             Codec::Xz => "xz",
             Codec::Zstd => "zst",
+            Codec::Lz4 => "lz4",
+            Codec::Lzma => "lzma",
+            Codec::Lzip => "lz",
+            Codec::Compress => "Z",
         }
     }
 }
