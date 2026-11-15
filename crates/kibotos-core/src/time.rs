@@ -88,6 +88,48 @@ pub(crate) fn local_to_utc(local: i64) -> i64 {
     local
 }
 
+/// Converts UTC seconds to wall-clock seconds in the current time zone.
+#[cfg(windows)]
+pub(crate) fn utc_to_local(utc: i64) -> i64 {
+    use windows_sys::Win32::Foundation::SYSTEMTIME;
+    use windows_sys::Win32::System::Time::SystemTimeToTzSpecificLocalTime;
+
+    let (y, mo, d, h, mi, s) = civil_from_secs(utc);
+    let ut = SYSTEMTIME {
+        wYear: y as u16,
+        wMonth: mo as u16,
+        wDayOfWeek: 0,
+        wDay: d as u16,
+        wHour: h as u16,
+        wMinute: mi as u16,
+        wSecond: s as u16,
+        wMilliseconds: 0,
+    };
+    let mut lt: SYSTEMTIME = unsafe { std::mem::zeroed() };
+    // SAFETY: valid pointers; a null time zone means the active one.
+    if unsafe { SystemTimeToTzSpecificLocalTime(std::ptr::null(), &ut, &mut lt) } == 0 {
+        return utc;
+    }
+    secs_from_civil(lt.wYear as i32, lt.wMonth as u32, lt.wDay as u32, lt.wHour as u32, lt.wMinute as u32, lt.wSecond as u32)
+}
+
+#[cfg(not(windows))]
+pub(crate) fn utc_to_local(utc: i64) -> i64 {
+    utc
+}
+
+/// Wall-clock seconds to MS-DOS (date, time), clamped to 1980..=2107.
+pub(crate) fn secs_to_dos(local: i64) -> (u16, u16) {
+    let (y, mo, d, h, mi, s) = civil_from_secs(local);
+    if y < 1980 {
+        return ((1 << 5) | 1, 0);
+    }
+    let y = y.min(2107);
+    let date = (((y - 1980) as u16) << 9) | ((mo as u16) << 5) | d as u16;
+    let time = ((h as u16) << 11) | ((mi as u16) << 5) | (s as u16 / 2);
+    (date, time)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,6 +150,9 @@ mod tests {
         let time = (10 << 11) | (30 << 5) | 10;
         assert_eq!(civil_from_secs(dos_to_secs(date, time).unwrap()), (2026, 11, 14, 10, 30, 20));
         assert_eq!(dos_to_secs(0, 0), None);
+        let local = secs_from_civil(2026, 11, 14, 10, 30, 20);
+        assert_eq!(secs_to_dos(local), (date, time));
+        assert_eq!(dos_to_secs(secs_to_dos(0).0, secs_to_dos(0).1), Some(secs_from_civil(1980, 1, 1, 0, 0, 0)));
     }
 
     #[test]

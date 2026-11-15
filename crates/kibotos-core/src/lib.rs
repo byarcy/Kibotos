@@ -12,7 +12,9 @@
 //!
 //! This crate has no UI code so it can be tested and benchmarked alone.
 
+mod codepage;
 mod control;
+pub mod create;
 mod detect;
 mod entry;
 mod error;
@@ -31,6 +33,7 @@ pub mod zone;
 use std::path::Path;
 
 pub use control::{Control, Limits, Progress};
+pub use create::{CreateFormat, CreateOptions, CreateReport, Level, SkipCause, create};
 pub use detect::{Codec, Format, detect_path};
 pub use entry::{Entry, EntryId, EntryKind, Timestamp};
 pub use error::{Error, LimitKind, Result};

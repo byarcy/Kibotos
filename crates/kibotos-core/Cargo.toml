@@ -23,12 +23,12 @@ zip = { version = "9.5", default-features = false, features = [
     "xz",
     "zstd",
 ] }
-sevenz-rust2 = { version = "0.25", default-features = false, features = ["aes256", "bzip2", "ppmd", "deflate", "zstd"] }
+sevenz-rust2 = { version = "0.25", default-features = false, features = ["aes256", "bzip2", "ppmd", "deflate", "zstd", "compress"] }
 tar = { version = "0.4.46", default-features = false }
 flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
 bzip2 = "0.6"
-zstd = { version = "0.14", default-features = false }
-lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "xz", "lzip", "optimization"] }
+zstd = { version = "0.14", default-features = false, features = ["zstdmt"] }
+lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "xz", "lzip", "encoder", "optimization"] }
 lz4_flex = { version = "0.14", default-features = false, features = ["std", "frame", "safe-decode", "checked-decode"] }
 msi = "0.11"
 lzxd = "0.2"
@@ -36,7 +36,7 @@ lzxd = "0.2"
 [target.'cfg(windows)'.dependencies]
 # Official unRAR source (extraction only). See licenses/unRAR-license.txt.
 unrar_sys = "0.5.8"
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Time"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Time", "Win32_Globalization"] }
 
 [dev-dependencies]
 tempfile = "3"

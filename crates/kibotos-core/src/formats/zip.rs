@@ -70,7 +70,12 @@ impl ArchiveReader for ZipBackend {
     fn extract(&mut self, ids: &[EntryId], sink: &mut dyn ExtractSink, ctl: &Control) -> Result<()> {
         let mut sel = Selection::new(ids, &self.entries, ctl)?;
         let mut pump = Pump::new(ctl, self.len);
-        let password = self.password.as_deref().map(str::as_bytes);
+        // UTF-8 first; ANSI (what 7-Zip uses) if the first encrypted file
+        // rejects it.
+        let utf8 = self.password.as_deref().map(|p| p.as_bytes().to_vec());
+        let ansi = self.password.as_deref().and_then(crate::codepage::ansi_bytes);
+        let mut password = utf8.clone();
+        let mut settled = ansi.is_none();
         for i in 0..self.entries.len() {
             if sel.remaining == 0 {
                 break;
@@ -81,7 +86,14 @@ impl ArchiveReader for ZipBackend {
             let entry = &self.entries[i];
             if entry.kind == EntryKind::File {
                 let encrypted = entry.encrypted;
-                let opts = ZipReadOptions::new().password(if encrypted { password } else { None });
+                if encrypted && !settled {
+                    settled = true;
+                    let opts = ZipReadOptions::new().password(password.as_deref());
+                    if matches!(self.archive.by_index_with_options(i, opts), Err(ZipError::InvalidPassword)) {
+                        password = ansi.clone();
+                    }
+                }
+                let opts = ZipReadOptions::new().password(if encrypted { password.as_deref() } else { None });
                 let mut zf = self.archive.by_index_with_options(i, opts).map_err(map_err)?;
                 pump.run(entry, &mut zf, sink, &|e| {
                     // ZipCrypto has a weak password check: a wrong password

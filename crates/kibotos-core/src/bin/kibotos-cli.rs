@@ -15,6 +15,7 @@ kibotos-cli - Kibotos core test tool
 USAGE:
   kibotos-cli list    <archive> [-p PASSWORD] [-q] [--filter TEXT]
   kibotos-cli extract <archive> <dest> [-p PASSWORD] [--only PATH]... [--keep] [--threads N]
+  kibotos-cli create  <out> <file or folder>... [-f FORMAT] [-l LEVEL] [-p PASSWORD] [--threads N]
   kibotos-cli gen-zip <out.zip> <entries>
 
   -q          print only timings, not the entries
@@ -22,6 +23,8 @@ USAGE:
   --only      extract only this file or folder (repeatable)
   --keep      do not overwrite existing files
   --threads N writer threads for small files (0 = write on the extraction thread)
+  -f          zip (default), 7z, tar, tar.gz, tar.bz2, tar.xz, tar.zst
+  -l          store, fast, normal (default), max
   gen-zip     write a test ZIP with <entries> small stored files
 ";
 
@@ -35,6 +38,7 @@ fn main() -> ExitCode {
         Some("list") => cmd_list(&args[1..]),
         Some("extract") => cmd_extract(&args[1..]),
         Some("gen-zip") => cmd_gen_zip(&args[1..]),
+        Some("create") => cmd_create(&args[1..]),
         _ => {
             eprint!("{USAGE}");
             return ExitCode::from(2);
@@ -209,6 +213,65 @@ fn cmd_extract(args: &[String]) -> Result<(), String> {
     println!("written      {} files, {} folders, {} bytes ({:.1} MB/s)", r.files, r.dirs, r.bytes, r.bytes as f64 / secs / 1e6);
     println!("skipped      {}", r.skipped.len());
     res.map_err(|e| e.to_string())
+}
+
+fn cmd_create(args: &[String]) -> Result<(), String> {
+    use kibotos_core::{Codec, CreateFormat, CreateOptions, Level};
+    let mut opts = CreateOptions::default();
+    let mut paths = Vec::new();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "-f" => {
+                opts.format = match it.next().map(String::as_str) {
+                    Some("zip") => CreateFormat::Zip,
+                    Some("7z") => CreateFormat::SevenZip,
+                    Some("tar") => CreateFormat::Tar(None),
+                    Some("tar.gz") => CreateFormat::Tar(Some(Codec::Gzip)),
+                    Some("tar.bz2") => CreateFormat::Tar(Some(Codec::Bzip2)),
+                    Some("tar.xz") => CreateFormat::Tar(Some(Codec::Xz)),
+                    Some("tar.zst") => CreateFormat::Tar(Some(Codec::Zstd)),
+                    other => return Err(format!("unknown format {other:?}")),
+                }
+            }
+            "-l" => {
+                opts.level = match it.next().map(String::as_str) {
+                    Some("store") => Level::Store,
+                    Some("fast") => Level::Fast,
+                    Some("normal") => Level::Normal,
+                    Some("max") => Level::Maximum,
+                    other => return Err(format!("unknown level {other:?}")),
+                }
+            }
+            "-p" => opts.password = Some(it.next().ok_or("-p needs a value")?.clone()),
+            "--no-encrypt-names" => opts.encrypt_names = false,
+            "--threads" => opts.threads = it.next().and_then(|n| n.parse().ok()).ok_or("--threads needs a number")?,
+            _ => paths.push(PathBuf::from(a)),
+        }
+    }
+    if paths.len() < 2 {
+        return Err("usage: create <out> <file or folder>...".into());
+    }
+    let out = paths.remove(0);
+    let ctl = Control::new();
+    let t = Instant::now();
+    let report = kibotos_core::create(&out, &paths, &opts, &ctl).map_err(|e| e.to_string())?;
+    let secs = t.elapsed().as_secs_f64().max(1e-9);
+    for (p, why) in &report.skipped {
+        eprintln!("skipped  {}  ({why:?})", p.display());
+    }
+    println!("created      {} ({:?}, {:?})", out.display(), opts.format, opts.level);
+    println!("time         {}", ms(t.elapsed()));
+    println!(
+        "added        {} files, {} folders, {} bytes ({:.1} MB/s)",
+        report.files,
+        report.dirs,
+        report.bytes_in,
+        report.bytes_in as f64 / secs / 1e6
+    );
+    println!("archive      {} bytes ({:.1}%)", report.bytes_out, report.bytes_out as f64 * 100.0 / report.bytes_in.max(1) as f64);
+    println!("skipped      {}", report.skipped.len());
+    Ok(())
 }
 
 fn cmd_gen_zip(args: &[String]) -> Result<(), String> {
