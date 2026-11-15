@@ -41,7 +41,50 @@ pub fn app_icon(small: bool) -> windows::Win32::UI::WindowsAndMessaging::HICON {
     }
 }
 
+/// A panic aborts the process (panic = "abort"), which for a window app
+/// means it just vanishes. Record what failed in `%TEMP%\Kibotos\crash.log`
+/// and tell the user before that happens.
+fn install_panic_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        let place = info.location().map(|l| format!("{}:{}", l.file(), l.line())).unwrap_or_default();
+        let what = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_default();
+        let thread = std::thread::current().name().unwrap_or("?").to_string();
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        let line = format!("v{} thread '{thread}' at {place}: {what}
+  args: {args:?}
+", env!("CARGO_PKG_VERSION"));
+        let log = std::env::temp_dir().join("Kibotos").join("crash.log");
+        let _ = std::fs::create_dir_all(log.parent().unwrap_or(&log));
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&log) {
+            use std::io::Write;
+            let _ = f.write_all(line.as_bytes());
+        }
+        let text = strings::crash_message(&format!("{what}
+({place})"), &log.display().to_string());
+        // On a thread of its own: a message box on the panicking thread can
+        // return at once (e.g. when the panic happened while painting).
+        let shown = std::thread::spawn(move || {
+            use windows::Win32::UI::WindowsAndMessaging::*;
+            unsafe {
+                MessageBoxW(
+                    None,
+                    &windows::core::HSTRING::from(text),
+                    &windows::core::HSTRING::from(strings::t::CRASH_TITLE),
+                    MB_OK | MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST,
+                );
+            }
+        });
+        let _ = shown.join();
+    }));
+}
+
 fn main() {
+    install_panic_hook();
     timing::mark("main", "");
     let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     // "--extract-here" and friends come from the Explorer context menu and

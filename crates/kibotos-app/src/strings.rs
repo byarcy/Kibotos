@@ -38,6 +38,7 @@ pub mod es {
     pub const FILTER_ALL: &str = "Todos los archivos";
 
     pub const ERROR_TITLE: &str = "No se pudo abrir el archivo";
+    pub const CRASH_TITLE: &str = "Kibotós debe cerrarse";
     pub const ABOUT_TITLE: &str = "Acerca de Kibotós";
     pub const ABOUT_TAGLINE: &str = "Gestor de archivos comprimidos rápido y ligero.";
     pub const SIGNATURE: &str = "byarcy 2026";
@@ -284,6 +285,16 @@ pub fn about_text() -> String {
 }
 
 /// User-facing message for a core error.
+/// Shown just before an internal error closes the program.
+pub fn crash_message(what: &str, log: &str) -> String {
+    format!("Se produjo un error interno y Kibotós se cerrará.
+
+{what}
+
+Los detalles se guardaron en:
+{log}")
+}
+
 pub fn error_message(e: &Error) -> String {
     match e {
         Error::UnknownFormat => t::ERR_UNKNOWN_FORMAT.into(),

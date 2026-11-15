@@ -961,6 +961,10 @@ unsafe fn on_loaded(hwnd: HWND, lp: LPARAM) {
                     a.archive = Some(loaded);
                     a.fs = None;
                     a.query.clear();
+                    // The rows still index the previous view; the list may
+                    // repaint before refresh() below rebuilds them.
+                    a.rows.clear();
+                    a.rows_query.clear();
                 });
                 set_filter_text("");
                 set_mode(true);
@@ -976,6 +980,8 @@ unsafe fn on_loaded(hwnd: HWND, lp: LPARAM) {
                     a.fs = Some(listing);
                     a.archive = None;
                     a.query.clear();
+                    a.rows.clear();
+                    a.rows_query.clear();
                 });
                 set_filter_text("");
                 set_mode(false);
@@ -2357,6 +2363,9 @@ fn fill_row(di: &mut NMLVDISPINFOW) {
 
         let Some(arc) = &app.archive else { return };
         let index = &arc.index;
+        if node as usize >= index.len() {
+            return; // a row of another view, about to be replaced
+        }
         let is_dir = index.is_dir(node);
         let entry = index.entry(node).map(|id| &arc.reader.entries()[id as usize]);
         if wants_image {
