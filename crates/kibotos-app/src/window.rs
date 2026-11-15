@@ -38,7 +38,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     VK_RETURN, VK_UP,
 };
 use windows::Win32::UI::Shell::{
-    DefSubclassProc, DragFinish, DragQueryFileW, HDROP, SEE_MASK_INVOKEIDLIST, SHELLEXECUTEINFOW, SetWindowSubclass,
+    DefSubclassProc, DragFinish, OAIF_EXEC, OPENASINFO, SHOpenWithDialog, DragQueryFileW, HDROP, SEE_MASK_INVOKEIDLIST, SHELLEXECUTEINFOW, SetWindowSubclass,
     ShellExecuteExW,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
@@ -1928,6 +1928,20 @@ fn open_entry(hwnd: HWND, node: NodeId, with: bool) {
 fn shell_open(hwnd: HWND, file: &Path, with: bool) {
     ensure_com();
     let path = HSTRING::from(file.as_os_str());
+    if with {
+        // The "openas" verb fails ("no app associated") on Windows 10/11
+        // for types that already have a default program, e.g. .zip.
+        let info = OPENASINFO { pcszFile: PCWSTR(path.as_ptr()), pcszClass: PCWSTR::null(), oaifInFlags: OAIF_EXEC };
+        if let Err(e) = unsafe { SHOpenWithDialog(Some(hwnd), &info) } {
+            const ERROR_CANCELLED: i32 = 1223;
+            if e.code().0 & 0xFFFF != ERROR_CANCELLED {
+                dialogs::message(hwnd, t::OPEN_FAILED, &format!("{}
+
+{}", file.display(), e.message()), MB_ICONERROR);
+            }
+        }
+        return;
+    }
     let dir = HSTRING::from(file.parent().unwrap_or(file).as_os_str());
     let mut info = SHELLEXECUTEINFOW {
         cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
@@ -1935,7 +1949,6 @@ fn shell_open(hwnd: HWND, file: &Path, with: bool) {
         lpFile: PCWSTR(path.as_ptr()),
         lpDirectory: PCWSTR(dir.as_ptr()),
         nShow: SW_SHOWNORMAL.0,
-        lpVerb: if with { w!("openas") } else { PCWSTR::null() },
         ..Default::default()
     };
     // Without a registered program Windows shows its "Open with" dialog.
