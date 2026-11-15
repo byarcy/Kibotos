@@ -229,7 +229,7 @@ pub fn selection_count(n: usize) -> String {
 }
 
 pub fn extract_to_folder(name: &str) -> String {
-    format!(r"Extraer en «{name}\»")
+    format!("Extraer a \"{name}\"")
 }
 
 /// "120,3 GB libres" for a drive.
