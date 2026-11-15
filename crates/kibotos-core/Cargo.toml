@@ -30,6 +30,8 @@ bzip2 = "0.6"
 zstd = { version = "0.14", default-features = false }
 lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "xz", "lzip", "optimization"] }
 lz4_flex = { version = "0.14", default-features = false, features = ["std", "frame", "safe-decode", "checked-decode"] }
+msi = "0.11"
+lzxd = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 # Official unRAR source (extraction only). See licenses/unRAR-license.txt.

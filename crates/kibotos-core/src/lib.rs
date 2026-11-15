@@ -110,5 +110,8 @@ pub fn open_as(path: &Path, format: Format, opts: &OpenOptions) -> Result<Box<dy
         Format::Rar => return Err(Error::Unsupported("RAR is only supported on Windows".into())),
         Format::Tar(codec) => Box::new(formats::tar::TarBackend::open(path, codec)?),
         Format::Compressed(codec) => Box::new(formats::single::SingleBackend::open(path, codec)?),
+        Format::Iso => Box::new(formats::iso::IsoBackend::open(path)?),
+        Format::Cab => Box::new(formats::cab::CabBackend::open(path)?),
+        Format::Msi => Box::new(formats::msi::MsiBackend::open(path)?),
     })
 }

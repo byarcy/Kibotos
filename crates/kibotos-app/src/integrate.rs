@@ -32,6 +32,7 @@ const APP: &str = "Kibotos";
 /// menu and "Abrir con", which never changes how they run by default.
 pub const EXTENSIONS: &[&str] = &[
     "zip", "jar", "apk", "cbz", "7z", "rar", "cbr", "tar", "gz", "tgz", "bz2", "tbz", "tbz2", "xz", "txz", "zst", "tzst",
+    "lz4", "tlz4", "lzma", "tlz", "lz", "z", "taz", "iso", "cab", "msi", "001",
 ];
 
 fn check(e: WIN32_ERROR) -> io::Result<()> {

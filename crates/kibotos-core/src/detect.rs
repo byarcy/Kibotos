@@ -87,6 +87,12 @@ pub enum Format {
     Tar(Option<Codec>),
     /// A single compressed file that is not a tar archive.
     Compressed(Codec),
+    /// ISO 9660 disc image.
+    Iso,
+    /// Windows cabinet.
+    Cab,
+    /// Windows Installer package.
+    Msi,
 }
 
 impl Format {
@@ -105,6 +111,9 @@ impl Format {
             Format::Tar(Some(Codec::Lzip)) => "tar.lz",
             Format::Tar(Some(Codec::Compress)) => "tar.Z",
             Format::Compressed(c) => c.name(),
+            Format::Iso => "ISO",
+            Format::Cab => "CAB",
+            Format::Msi => "MSI",
         }
     }
 
@@ -112,7 +121,7 @@ impl Format {
     /// permanently read-only: the unRAR license forbids building a
     /// RAR-compatible compressor.
     pub fn can_write(self) -> bool {
-        !matches!(self, Format::Rar)
+        !matches!(self, Format::Rar | Format::Iso | Format::Cab | Format::Msi)
     }
 }
 
@@ -167,6 +176,8 @@ pub fn detect_path(path: &Path) -> Result<Format> {
         Codec::Compress
     } else if let Ok(f) = detect_container(head) {
         return Ok(f);
+    } else if let Some(f) = detect_deep(path, head)? {
+        return Ok(f);
     } else if looks_like_lzma(head) {
         Codec::Lzma
     } else {
@@ -194,7 +205,34 @@ pub fn detect_path(path: &Path) -> Result<Format> {
     }
 }
 
+const CAB: &[u8] = b"MSCF\0\0\0\0";
+const CFB: &[u8] = &[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
+
+/// Formats recognised beyond the first 512 bytes: disc images (signature
+/// at 32 KiB) and MSI packages (a compound file with the installer CLSID,
+/// unlike Office documents, which share the container).
+fn detect_deep(path: &Path, head: &[u8]) -> Result<Option<Format>> {
+    let mut file = Source::open(path)?;
+    if head.starts_with(CFB) {
+        let installer = msi::Package::open(io::BufReader::new(file)).is_ok_and(|p| p.package_type() == msi::PackageType::Installer);
+        return Ok(installer.then_some(Format::Msi));
+    }
+    let mut sig = [0u8; 5];
+    use std::io::Seek;
+    if file.len() > 0x8006
+        && file.seek(io::SeekFrom::Start(0x8001)).is_ok()
+        && file.read_exact(&mut sig).is_ok()
+        && matches!(&sig, b"CD001" | b"BEA01")
+    {
+        return Ok(Some(Format::Iso));
+    }
+    Ok(None)
+}
+
 fn detect_container(head: &[u8]) -> Result<Format> {
+    if head.starts_with(CAB) {
+        return Ok(Format::Cab);
+    }
     if head.starts_with(ZIP_LOCAL) || head.starts_with(ZIP_EMPTY) || head.starts_with(ZIP_SPANNED) {
         Ok(Format::Zip)
     } else if head.starts_with(SEVENZ) {

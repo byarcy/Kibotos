@@ -707,3 +707,78 @@ fn spanned_zip_offsets_are_rebased() {
         assert_eq!(out["data/noise.bin"].len(), 9000);
     }
 }
+
+/// Checks the tree written by the fixture generator (CAB and ISO fixtures).
+fn check_fixture_tree(out: &HashMap<String, Vec<u8>>) {
+    assert_eq!(out["leeme.txt"], b"hola ISO\n");
+    assert_eq!(out["carpeta/sub/año ñandú.txt"], "unicode ✓\n".repeat(100).into_bytes());
+    assert_eq!(out["carpeta/datos.bin"].len(), 6000);
+    let text = String::from_utf8(out["texto.txt"].clone()).unwrap();
+    assert_eq!(text.split(' ').count(), 20000);
+    assert!(text.ends_with("17"), "last word of texto.txt (19999 % 97)");
+}
+
+#[test]
+fn cabinets_mszip_and_lzx() {
+    // Made with Windows' makecab; texto.txt spans several 32 KiB blocks,
+    // so MSZIP's history between blocks is exercised.
+    for name in ["cab-mszip.cab", "cab-lzx.cab"] {
+        let mut r = open(&fixture(name));
+        assert_eq!(r.format(), Format::Cab);
+        assert_eq!(r.entries().len(), 4);
+        check_fixture_tree(&extract_all(r.as_mut()));
+        // One file alone, from the middle of the folder.
+        let id = r.entries().iter().find(|e| &*e.path == "carpeta/datos.bin").unwrap().id;
+        let mut sink = MemorySink::new();
+        r.extract(&[id], &mut sink, &Control::new()).unwrap();
+        assert_eq!(sink.files.len(), 1);
+        assert_eq!(sink.files["carpeta/datos.bin"].len(), 6000);
+    }
+}
+
+#[test]
+fn disc_images_joliet_and_udf() {
+    // Made with Windows' IMAPI2 (ISO 9660 + Joliet, and UDF alone), stored
+    // as .xz to keep the repository small.
+    let dir = TempDir::new().unwrap();
+    for name in ["disc-joliet.iso", "disc-udf.iso"] {
+        let xz = std::fs::read(fixture(&format!("{name}.xz"))).unwrap();
+        let mut iso = Vec::new();
+        std::io::Read::read_to_end(&mut lzma_rust2::XzReader::new(xz.as_slice(), true), &mut iso).unwrap();
+        let p = dir.path().join(name);
+        std::fs::write(&p, &iso).unwrap();
+        let mut r = open(&p);
+        assert_eq!(r.format(), Format::Iso, "{name}");
+        assert!(r.entries().iter().any(|e| &*e.path == "vacía" && e.kind == EntryKind::Dir), "{name}: empty folder");
+        check_fixture_tree(&extract_all(r.as_mut()));
+    }
+}
+
+#[test]
+fn disc_image_loops_are_rejected() {
+    // A Joliet image whose root directory record points at itself from
+    // inside: the walk must stop instead of recursing forever.
+    let dir = TempDir::new().unwrap();
+    let xz = std::fs::read(fixture("disc-joliet.iso.xz")).unwrap();
+    let mut iso = Vec::new();
+    std::io::Read::read_to_end(&mut lzma_rust2::XzReader::new(xz.as_slice(), true), &mut iso).unwrap();
+    // Point every subdirectory record at the root's extent.
+    let svd = (16..32).map(|i| i * 2048).find(|&o| iso[o] == 2 && &iso[o + 1..o + 6] == b"CD001").unwrap();
+    let root_lba = u32::from_le_bytes(iso[svd + 158..svd + 162].try_into().unwrap());
+    let root = root_lba as usize * 2048;
+    let mut p = root;
+    while iso[p] != 0 {
+        let len = iso[p] as usize;
+        if iso[p + 25] & 2 != 0 && iso[p + 32] > 1 {
+            iso[p + 2..p + 6].copy_from_slice(&root_lba.to_le_bytes());
+        }
+        p += len;
+    }
+    let p = dir.path().join("loop.iso");
+    std::fs::write(&p, &iso).unwrap();
+    match kibotos_core::open(&p, &OpenOptions::default()) {
+        Err(Error::Corrupt(_)) => {}
+        Err(e) => panic!("unexpected error {e}"),
+        Ok(_) => panic!("opened an image with a directory loop"),
+    }
+}

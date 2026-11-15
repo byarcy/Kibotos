@@ -95,7 +95,7 @@ pub fn folder_name(archive: &Path) -> String {
     // Strip archive-like extensions, at most two (".tar.gz").
     const EXTS: &[&str] = &[
         "zip", "jar", "apk", "cbz", "7z", "rar", "cbr", "tar", "gz", "tgz", "bz2", "tbz", "tbz2", "xz", "txz", "zst",
-        "tzst", "gzip", "bzip2", "zstd",
+        "tzst", "gzip", "bzip2", "zstd", "lz4", "tlz4", "lzma", "tlz", "lz", "z", "taz", "iso", "cab", "msi",
     ];
     for _ in 0..2 {
         match name.rsplit_once('.') {

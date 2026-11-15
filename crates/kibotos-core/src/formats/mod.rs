@@ -1,10 +1,14 @@
 //! One module per archive family. Each implements [`crate::ArchiveReader`].
 
+pub mod cab;
+pub mod iso;
+pub mod msi;
 #[cfg(windows)]
 pub mod rar;
 pub mod sevenz;
 pub mod single;
 pub mod tar;
+mod udf;
 pub mod zip;
 
 use std::io::BufReader;
