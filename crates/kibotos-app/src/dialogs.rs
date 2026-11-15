@@ -25,7 +25,7 @@ use windows::core::{BOOL, HSTRING, PCWSTR, w};
 use crate::strings::{self, t};
 use crate::{format, wide};
 
-fn scale(v: i32, dpi: u32) -> i32 {
+pub(crate) fn scale(v: i32, dpi: u32) -> i32 {
     v * dpi as i32 / 96
 }
 
@@ -96,7 +96,7 @@ extern "system" fn prompt_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
     }
 }
 
-fn message_font(dpi: u32) -> HFONT {
+pub(crate) fn message_font(dpi: u32) -> HFONT {
     unsafe {
         let mut ncm = NONCLIENTMETRICSW { cbSize: std::mem::size_of::<NONCLIENTMETRICSW>() as u32, ..Default::default() };
         let _ = SystemParametersInfoForDpi(
@@ -111,7 +111,7 @@ fn message_font(dpi: u32) -> HFONT {
 }
 
 /// Centers a window of size (w, h) over `owner` (or the screen).
-fn centered(owner: HWND, w: i32, h: i32) -> (i32, i32) {
+pub(crate) fn centered(owner: HWND, w: i32, h: i32) -> (i32, i32) {
     let mut r = RECT::default();
     unsafe {
         if owner.is_invalid() || GetWindowRect(owner, &mut r).is_err() {

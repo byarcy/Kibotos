@@ -64,6 +64,7 @@ const ID_UP: u16 = 104;
 const ID_EXTRACT: u16 = 105;
 const ID_PATHBAR: u16 = 106;
 const ID_REFRESH: u16 = 107;
+const ID_COMPRESS: u16 = 108;
 const ID_ABOUT: u16 = 201;
 const ID_INTEGRATE: u16 = 301;
 const ID_UNINTEGRATE: u16 = 302;
@@ -78,6 +79,9 @@ const CM_FS_EXTRACT_HERE: u32 = 408;
 const CM_FS_EXTRACT_FOLDER: u32 = 409;
 const CM_SHOW_IN_EXPLORER: u32 = 410;
 const CM_REFRESH: u32 = 411;
+const CM_COMPRESS_ZIP: u32 = 412;
+const CM_COMPRESS_7Z: u32 = 413;
+const CM_COMPRESS_DIALOG: u32 = 414;
 const ID_LIST: usize = 1000;
 
 /// Gives up waiting for the shell to copy the drag marker.
@@ -281,6 +285,7 @@ pub fn run(archive: Option<PathBuf>) {
             ACCEL { fVirt: FCONTROL | FVIRTKEY, key: b'O' as u16, cmd: ID_OPEN },
             ACCEL { fVirt: FCONTROL | FVIRTKEY, key: b'F' as u16, cmd: ID_FIND },
             ACCEL { fVirt: FCONTROL | FVIRTKEY, key: b'E' as u16, cmd: ID_EXTRACT },
+            ACCEL { fVirt: FCONTROL | FVIRTKEY, key: b'N' as u16, cmd: ID_COMPRESS },
             ACCEL { fVirt: FALT | FVIRTKEY, key: VK_UP.0, cmd: ID_UP },
             ACCEL { fVirt: FCONTROL | FVIRTKEY, key: b'L' as u16, cmd: ID_PATHBAR },
             ACCEL { fVirt: FALT | FVIRTKEY, key: b'D' as u16, cmd: ID_PATHBAR },
@@ -310,6 +315,7 @@ unsafe fn build_menu() -> HMENU {
         let file = CreatePopupMenu().unwrap_or_default();
         let _ = AppendMenuW(file, MF_STRING, ID_OPEN as usize, &HSTRING::from(t::MENU_OPEN));
         let _ = AppendMenuW(file, MF_STRING, ID_EXTRACT as usize, &HSTRING::from(t::MENU_EXTRACT));
+        let _ = AppendMenuW(file, MF_STRING, ID_COMPRESS as usize, &HSTRING::from(t::MENU_COMPRESS));
         let _ = AppendMenuW(file, MF_SEPARATOR, 0, PCWSTR::null());
         let _ = AppendMenuW(file, MF_STRING, ID_EXIT as usize, &HSTRING::from(t::MENU_EXIT));
         let tools = CreatePopupMenu().unwrap_or_default();
@@ -621,6 +627,13 @@ unsafe fn on_command(hwnd: HWND, id: u16) {
             }
             ID_FIND => focus_filter(),
             ID_EXTRACT => on_extract(hwnd),
+            ID_COMPRESS => {
+                // Disk view only: archives are not edited (yet).
+                if with_app(|a| a.fs.is_some() && !a.loading) {
+                    let paths: Vec<PathBuf> = fs_selection().into_iter().map(|s| s.0).collect();
+                    fs_compress(hwnd, paths, None);
+                }
+            }
             ID_INTEGRATE => {
                 crate::cli::integration(hwnd, true);
             }
@@ -2199,7 +2212,13 @@ fn fs_context_menu(hwnd: HWND, pt: POINT) {
             add(CM_FS_EXTRACT_FOLDER, &folder_label, !busy);
             add(CM_EXTRACT, t::CTX_EXTRACT, !busy);
         }
+        let inputs: Vec<PathBuf> = sel.iter().map(|s| s.0.clone()).collect();
         if !sel.is_empty() {
+            sep();
+            let base = crate::compress::base_name(&inputs);
+            add(CM_COMPRESS_ZIP, &strings::compress_to(&format!("{base}.zip")), !busy);
+            add(CM_COMPRESS_7Z, &strings::compress_to(&format!("{base}.7z")), !busy);
+            add(CM_COMPRESS_DIALOG, t::CTX_COMPRESS_DIALOG, !busy);
             sep();
             add(CM_SHOW_IN_EXPLORER, t::CTX_SHOW_IN_EXPLORER, sel.len() == 1);
             add(CM_COPY_PATH, t::CTX_COPY_PATH, true);
@@ -2223,6 +2242,9 @@ fn fs_context_menu(hwnd: HWND, pt: POINT) {
             CM_FS_EXTRACT_HERE => fs_extract(hwnd, archives, crate::cli::Mode::Here),
             CM_FS_EXTRACT_FOLDER => fs_extract(hwnd, archives, crate::cli::Mode::ToFolder),
             CM_EXTRACT => fs_extract(hwnd, archives, crate::cli::Mode::Dialog),
+            CM_COMPRESS_ZIP => fs_compress(hwnd, inputs, Some(kibotos_core::CreateFormat::Zip)),
+            CM_COMPRESS_7Z => fs_compress(hwnd, inputs, Some(kibotos_core::CreateFormat::SevenZip)),
+            CM_COMPRESS_DIALOG => fs_compress(hwnd, inputs, None),
             CM_SHOW_IN_EXPLORER => {
                 if let [(path, kind, _)] = &sel[..] {
                     show_in_explorer(hwnd, path, *kind);
@@ -2243,6 +2265,32 @@ fn fs_context_menu(hwnd: HWND, pt: POINT) {
             CM_REFRESH => reload(hwnd),
             _ => {}
         }
+    }
+}
+
+/// Compresses disk items: straight to "name.zip" / "name.7z" next to them,
+/// or through the "Comprimir" dialog (`format` = None). The view is read
+/// again afterwards so the new archive shows up.
+fn fs_compress(hwnd: HWND, inputs: Vec<PathBuf>, format: Option<kibotos_core::CreateFormat>) {
+    use crate::compress;
+    if inputs.is_empty() || with_app(|a| a.job.is_some()) {
+        return;
+    }
+    ensure_com();
+    let req = match format {
+        Some(format) => {
+            let (_, level) = compress::remembered();
+            let output = compress::default_output(&inputs, format);
+            compress::Request { output, options: kibotos_core::CreateOptions { format, level, ..Default::default() } }
+        }
+        None => match compress::ask(hwnd, &inputs) {
+            Some(r) => r,
+            None => return,
+        },
+    };
+    let outcome = compress::run(Some(hwnd), &inputs, &req);
+    if compress::report(hwnd, &req, &outcome).is_some() {
+        reload(hwnd);
     }
 }
 

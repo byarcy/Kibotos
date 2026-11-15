@@ -3,6 +3,8 @@
 #![windows_subsystem = "windows"]
 
 mod cli;
+mod collect;
+mod compress;
 mod dialogs;
 mod drag;
 mod format;

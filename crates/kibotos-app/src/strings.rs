@@ -9,6 +9,7 @@ pub mod es {
     pub const MENU_FILE: &str = "&Archivo";
     pub const MENU_OPEN: &str = "&Abrir...\tCtrl+O";
     pub const MENU_EXTRACT: &str = "&Extraer...\tCtrl+E";
+    pub const MENU_COMPRESS: &str = "&Comprimir...\tCtrl+N";
     pub const MENU_EXIT: &str = "&Salir";
     pub const MENU_TOOLS: &str = "&Herramientas";
     pub const MENU_INTEGRATE: &str = "&Integrar con Windows";
@@ -76,7 +77,7 @@ pub mod es {
     pub const COPIES_SAVED: &str = "Copias guardadas";
     pub const COPY_FAILED: &str = "No se pudo guardar la copia de";
 
-    pub const CLI_USAGE: &str = "Uso:\n\n  kibotos.exe [archivo]\n      Abre el archivo comprimido.\n\n  kibotos.exe --extract-here archivo...\n      Extrae junto al archivo (en una carpeta con su nombre si tiene varios elementos sueltos).\n\n  kibotos.exe --extract-to-folder archivo...\n      Extrae en una carpeta con el nombre del archivo.\n\n  kibotos.exe --extract-dialog archivo...\n      Pregunta dónde extraer.\n\n  kibotos.exe --integrate | --unintegrate\n      Añade o quita el menú contextual y la opción «Abrir con» (solo para tu usuario).";
+    pub const CLI_USAGE: &str = "Uso:\n\n  kibotos.exe [archivo]\n      Abre el archivo comprimido.\n\n  kibotos.exe --extract-here archivo...\n      Extrae junto al archivo (en una carpeta con su nombre si tiene varios elementos sueltos).\n\n  kibotos.exe --extract-to-folder archivo...\n      Extrae en una carpeta con el nombre del archivo.\n\n  kibotos.exe --extract-dialog archivo...\n      Pregunta dónde extraer.\n\n  kibotos.exe --integrate | --unintegrate\n      Añade o quita el menú contextual y la opción «Abrir con» (solo para tu usuario).\n\n  kibotos.exe --compress-zip | --compress-7z | --compress-dialog elemento...\n      Comprime los archivos y carpetas en un ZIP o un 7z junto a ellos, o pregunta cómo.";
 
     // Windows integration (registry labels and messages)
     pub const REG_TYPE_NAME: &str = "Archivo comprimido";
@@ -84,6 +85,35 @@ pub mod es {
     pub const REG_EXTRACT_HERE: &str = "Extraer aquí";
     pub const REG_EXTRACT_FOLDER: &str = "Extraer en carpeta";
     pub const REG_EXTRACT_DIALOG: &str = "Extraer ficheros...";
+    pub const REG_COMPRESS_MENU: &str = "Comprimir con Kibotós";
+    pub const REG_COMPRESS_ZIP: &str = "Comprimir en ZIP";
+    pub const REG_COMPRESS_7Z: &str = "Comprimir en 7z";
+    pub const REG_COMPRESS_DIALOG: &str = "Comprimir...";
+
+    pub const PROGRESS_COMPRESSING: &str = "Comprimiendo";
+    pub const CTX_COMPRESS_DIALOG: &str = "Co&mprimir...	Ctrl+N";
+    pub const COMPRESS_TITLE: &str = "Comprimir";
+    pub const COMPRESS_FILE: &str = "&Guardar como:";
+    pub const COMPRESS_BROWSE: &str = "&Examinar...";
+    pub const COMPRESS_FORMAT: &str = "&Formato:";
+    pub const COMPRESS_LEVEL: &str = "&Nivel:";
+    pub const LEVEL_STORE: &str = "Sin compresión";
+    pub const LEVEL_FAST: &str = "Rápido";
+    pub const LEVEL_NORMAL: &str = "Normal";
+    pub const LEVEL_MAX: &str = "Máximo";
+    pub const COMPRESS_PASSWORD: &str = "&Contraseña:";
+    pub const COMPRESS_PASSWORD2: &str = "&Repetir:";
+    pub const COMPRESS_ENCRYPT_NAMES: &str = "Cifrar también los n&ombres de los archivos";
+    pub const COMPRESS_OK: &str = "Comprimir";
+    pub const COMPRESS_NO_PASSWORD: &str = "Este formato no admite contraseña.";
+    pub const COMPRESS_ZIP_ACCENTS: &str = "En ZIP, una contraseña con tildes o ñ puede no abrirse en otros programas; en 7z no hay ese problema.";
+    pub const COMPRESS_MISMATCH: &str = "Las contraseñas no coinciden.";
+    pub const COMPRESS_NO_NAME: &str = "Escribe el nombre del archivo que se va a crear.";
+    pub const COMPRESS_ERROR_TITLE: &str = "No se pudo comprimir";
+    pub const COMPRESS_SKIPPED_TITLE: &str = "Algunos elementos no se añadieron";
+    pub const SKIP_LINK: &str = "es un enlace o una unión: no se sigue";
+    pub const SAVE_ARCHIVE_TITLE: &str = "Guardar el archivo comprimido como";
+    pub const REPLACE: &str = "&Reemplazar";
     pub const INTEGRATE_TITLE: &str = "Integración con Windows";
     pub const INTEGRATE_DONE: &str = "Kibotós se ha integrado con Windows para tu usuario (sin permisos de administrador).";
     pub const INTEGRATE_MENU: &str = "Clic derecho en un comprimido → «Kibotós». En Windows 11 está dentro de «Mostrar más opciones».";
@@ -226,6 +256,35 @@ pub fn ratio(packed: u64, size: u64) -> String {
 
 pub fn selection_count(n: usize) -> String {
     if n == 1 { "1 elemento".into() } else { format!("{} elementos seleccionados", number(n as u64)) }
+}
+
+pub fn compress_to(name: &str) -> String {
+    format!("Comprimir en \"{name}\"")
+}
+
+pub fn compress_exists(name: &str) -> String {
+    format!("«{name}» ya existe. ¿Quieres reemplazarlo?")
+}
+
+pub fn compressed(name: &str, files: u64, bytes_in: u64, bytes_out: u64, secs: f64) -> String {
+    let f = if files == 1 { "archivo" } else { "archivos" };
+    let secs = format!("{secs:.1}").replace('.', ",");
+    format!("Creado «{name}»: {} {f}, {} → {} en {secs} s", number(files), bytes(bytes_in), bytes(bytes_out))
+}
+
+pub fn skipped_list(items: &[(std::path::PathBuf, kibotos_core::SkipCause)]) -> String {
+    let mut s = String::new();
+    for (path, why) in items.iter().take(12) {
+        let why = match why {
+            kibotos_core::SkipCause::Link => t::SKIP_LINK.to_string(),
+            kibotos_core::SkipCause::Unreadable(e) => e.clone(),
+        };
+        s.push_str(&format!("• {}\n   {why}\n", path.display()));
+    }
+    if items.len() > 12 {
+        s.push_str(&format!("… y {} más.", number((items.len() - 12) as u64)));
+    }
+    s
 }
 
 pub fn extract_to_folder(name: &str) -> String {

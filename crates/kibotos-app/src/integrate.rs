@@ -26,6 +26,10 @@ use crate::strings::t;
 
 pub const PROGID: &str = "Kibotos.Archive";
 const MENU: &str = "Kibotos.Menu";
+/// "Comprimir con Kibotós", on every file and folder.
+const COMPRESS_MENU: &str = "Kibotos.CompressMenu";
+const COMPRESS_VERB: &str = "Kibotos.Compress";
+const COMPRESS_TARGETS: [&str; 2] = ["*", "Directory"];
 const APP: &str = "Kibotos";
 
 /// Extensions Kibotós offers to open. `.jar` and `.apk` get the context
@@ -198,6 +202,29 @@ fn install_at(l: &Layout, exe: &Path) -> io::Result<()> {
         Key::create(&format!(r"{menu}\{key}\command"))?.set("", &format!("\"{exe_s}\" {args}\"%1\""))?;
     }
 
+    // "Comprimir con Kibotós" on any file or folder. Explorer runs the
+    // command once per selected item; the processes then gather into one
+    // archive (see `collect`). "Player" keeps the entry for any number of
+    // selected items (the default hides it above 15).
+    let cmenu = format!(r"{classes}\{COMPRESS_MENU}\shell");
+    for (key, label, flag) in [
+        ("1zip", t::REG_COMPRESS_ZIP, "--compress-zip"),
+        ("2sevenz", t::REG_COMPRESS_7Z, "--compress-7z"),
+        ("3dialog", t::REG_COMPRESS_DIALOG, "--compress-dialog"),
+    ] {
+        let verb = Key::create(&format!(r"{cmenu}\{key}"))?;
+        verb.set("MUIVerb", label)?;
+        verb.set("MultiSelectModel", "Player")?;
+        Key::create(&format!(r"{cmenu}\{key}\command"))?.set("", &format!("\"{exe_s}\" {flag} \"%1\""))?;
+    }
+    for target in COMPRESS_TARGETS {
+        let entry = Key::create(&format!(r"{classes}\{target}\shell\{COMPRESS_VERB}"))?;
+        entry.set("MUIVerb", t::REG_COMPRESS_MENU)?;
+        entry.set("Icon", &icon)?;
+        entry.set("ExtendedSubCommandsKey", COMPRESS_MENU)?;
+        entry.set("MultiSelectModel", "Player")?;
+    }
+
     // "Abrir con" entry for the program itself.
     let app = format!(r"{classes}\Applications\{exe_name}");
     Key::create(&app)?.set("FriendlyAppName", t::APP_NAME)?;
@@ -242,6 +269,12 @@ fn remove_at(l: &Layout) -> io::Result<()> {
 
     delete_tree(&format!(r"{classes}\{PROGID}"))?;
     delete_tree(&format!(r"{classes}\{MENU}"))?;
+    delete_tree(&format!(r"{classes}\{COMPRESS_MENU}"))?;
+    for target in COMPRESS_TARGETS {
+        delete_tree(&format!(r"{classes}\{target}\shell\{COMPRESS_VERB}"))?;
+        remove_if_empty(&format!(r"{classes}\{target}\shell"));
+        remove_if_empty(&format!(r"{classes}\{target}"));
+    }
     delete_tree(&format!(r"{classes}\Applications\{exe_name}"))?;
     for ext in EXTENSIONS {
         let dot = format!(".{ext}");
@@ -284,6 +317,18 @@ pub fn installed_exe() -> Option<String> {
     Key::open(&format!(r"Software\{APP}")).and_then(|k| k.get("Exe"))
 }
 
+/// A remembered preference (`HKCU\Software\Kibotos\Settings`).
+pub fn read_setting(name: &str) -> Option<String> {
+    Key::open(&format!(r"Software\{APP}\Settings")).and_then(|k| k.get(name))
+}
+
+/// Remembers a preference; failures are ignored (it is only a convenience).
+pub fn write_setting(name: &str, value: &str) {
+    if let Ok(k) = Key::create(&format!(r"Software\{APP}\Settings")) {
+        let _ = k.set(name, value);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -309,6 +354,12 @@ mod tests {
         assert_eq!(get(&format!(r"{classes}\SystemFileAssociations\.7z\shell\{APP}"), "ExtendedSubCommandsKey").unwrap(), MENU);
         assert_eq!(get(&format!(r"{}\FileAssociations", l.capabilities()), ".rar").unwrap(), PROGID);
         assert!(Key::open(&format!(r"{classes}\Applications\kibotos-v0.1.exe")).is_some());
+        assert_eq!(get(&format!(r"{classes}\*\shell\{COMPRESS_VERB}"), "ExtendedSubCommandsKey").unwrap(), COMPRESS_MENU);
+        assert_eq!(get(&format!(r"{classes}\Directory\shell\{COMPRESS_VERB}"), "MultiSelectModel").unwrap(), "Player");
+        assert_eq!(
+            get(&format!(r"{classes}\{COMPRESS_MENU}\shell\2sevenz\command"), "").unwrap(),
+            format!("\"{}\" --compress-7z \"%1\"", exe.display())
+        );
         // The default program of .zip was not touched.
         assert!(get(&format!(r"{classes}\.zip"), "").is_none());
 
@@ -317,6 +368,9 @@ mod tests {
         assert!(Key::open(&format!(r"{classes}\.7z")).is_none(), "empty keys we created are removed");
         assert!(Key::open(&format!(r"{classes}\SystemFileAssociations")).is_none_or(|k| k.is_empty()));
         assert!(Key::open(&l.app()).is_none());
+        assert!(Key::open(&format!(r"{classes}\{COMPRESS_MENU}")).is_none());
+        assert!(Key::open(&format!(r"{classes}\*")).is_none(), "empty * key removed");
+        assert!(Key::open(&format!(r"{classes}\Directory")).is_none());
         let other = Key::open(&format!(r"{classes}\.zip\OpenWithProgids")).expect("other program's key kept");
         let mut kind = REG_VALUE_TYPE::default();
         let found = unsafe { RegQueryValueExW(other.0, &HSTRING::from("Otro.Zip"), None, Some(&mut kind), None, None) };
@@ -325,3 +379,4 @@ mod tests {
         delete_tree(&scratch).unwrap();
     }
 }
+

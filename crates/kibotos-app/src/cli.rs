@@ -4,8 +4,12 @@
 //!   kibotos.exe --extract-to-folder <archive>...
 //!   kibotos.exe --extract-dialog    <archive>...
 //!
+//!   kibotos.exe --compress-zip      <file or folder>...
+//!   kibotos.exe --compress-7z       <file or folder>...
+//!   kibotos.exe --compress-dialog   <file or folder>...
+//!
 //! Only the small progress window appears (after 300 ms), plus any question
-//! the extraction needs: password, overwrite, blocked entries, errors.
+//! the operation needs: password, overwrite, blocked entries, errors.
 //! The process exit code is 0 on success, 1 on error, 2 if cancelled.
 
 use std::cell::RefCell;
@@ -25,7 +29,7 @@ use windows::core::w;
 
 use crate::job::{self, Dest, ExtractDone, ExtractJob, WM_APP_CONFLICT, WM_APP_EXTRACTED};
 use crate::strings::{self, t};
-use crate::{dialogs, progress};
+use crate::{collect, compress, dialogs, progress};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -149,11 +153,58 @@ pub fn integration(owner: HWND, install: bool) -> i32 {
     }
 }
 
+fn init_ui() {
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+        let icc = INITCOMMONCONTROLSEX {
+            dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
+            dwICC: ICC_PROGRESS_CLASS | ICC_STANDARD_CLASSES,
+        };
+        let _ = InitCommonControlsEx(&icc);
+    }
+}
+
+/// `--compress-zip`, `--compress-7z`, `--compress-dialog`: one archive of
+/// everything selected in Explorer (see `collect`).
+fn compress_cmd(kind: &str, rest: &[OsString]) -> i32 {
+    use kibotos_core::{CreateFormat, CreateOptions};
+    let mine: Vec<PathBuf> = rest.iter().map(PathBuf::from).collect();
+    if mine.is_empty() || !matches!(kind, "zip" | "7z" | "dialog") {
+        return usage();
+    }
+    let Some(inputs) = collect::gather(kind, mine) else { return OK };
+    init_ui();
+    let req = if kind == "dialog" {
+        match compress::ask(HWND::default(), &inputs) {
+            Some(r) => r,
+            None => return CANCELLED,
+        }
+    } else {
+        let format = if kind == "7z" { CreateFormat::SevenZip } else { CreateFormat::Zip };
+        let (_, level) = compress::remembered();
+        let output = compress::default_output(&inputs, format);
+        compress::Request { output, options: CreateOptions { format, level, ..Default::default() } }
+    };
+    let outcome = compress::run(None, &inputs, &req);
+    compress::report(HWND::default(), &req, &outcome);
+    match outcome {
+        compress::Outcome::Done(..) => {
+            if let Some(dir) = req.output.parent() {
+                crate::drag::shell_refresh(dir);
+            }
+            OK
+        }
+        compress::Outcome::Cancelled => CANCELLED,
+        compress::Outcome::Failed(_) => FAILED,
+    }
+}
+
 /// Entry point for `kibotos.exe --<mode> <archive>...`.
 pub fn run(args: &[OsString]) -> i32 {
     match args.first().and_then(|a| a.to_str()) {
         Some("--integrate") => return integration(HWND::default(), true),
         Some("--unintegrate") => return integration(HWND::default(), false),
+        Some(flag) if flag.starts_with("--compress-") => return compress_cmd(&flag["--compress-".len()..], &args[1..]),
         _ => {}
     }
     let Some(mode) = args.first().and_then(|a| a.to_str()).and_then(Mode::from_flag) else {
@@ -163,14 +214,7 @@ pub fn run(args: &[OsString]) -> i32 {
     if archives.is_empty() {
         return usage();
     }
-    unsafe {
-        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-        let icc = INITCOMMONCONTROLSEX {
-            dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
-            dwICC: ICC_PROGRESS_CLASS | ICC_STANDARD_CLASSES,
-        };
-        let _ = InitCommonControlsEx(&icc);
-    }
+    init_ui();
     let target = message_window();
     let mut code = OK;
     for archive in archives {
