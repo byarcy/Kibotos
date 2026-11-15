@@ -1,10 +1,10 @@
 //! Format detection by content. Extensions are ignored: a `.cbr` that is
 //! really a ZIP opens as ZIP.
 
-use std::fs::File;
 use std::io::{self, BufReader, Read};
 use std::path::Path;
 
+use crate::volume::Source;
 use crate::{Error, Result};
 
 /// Single-stream compressors used alone or around a tar archive.
@@ -38,7 +38,7 @@ impl Codec {
 
     /// A decoder reading a whole file: `.xz` files made of several blocks
     /// are decoded on several threads.
-    pub(crate) fn file_decoder(self, file: io::BufReader<std::fs::File>) -> io::Result<Box<dyn Read>> {
+    pub(crate) fn file_decoder(self, file: io::BufReader<Source>) -> io::Result<Box<dyn Read>> {
         match self {
             // Nothing has been read yet, so the buffer is empty.
             Codec::Xz => crate::xzmt::decoder(file.into_inner()),
@@ -104,7 +104,7 @@ const ZSTD: &[u8] = b"\x28\xB5\x2F\xFD";
 
 /// Detects the format of a file from its first bytes.
 pub fn detect_path(path: &Path) -> Result<Format> {
-    let mut file = File::open(path)?;
+    let mut file = Source::open(path)?;
     let mut head = [0u8; 512];
     let n = read_full(&mut file, &mut head)?;
     let head = &head[..n];
@@ -123,7 +123,7 @@ pub fn detect_path(path: &Path) -> Result<Format> {
 
     // Peek at the start of the decompressed stream to tell tar.* from a
     // single compressed file.
-    let file = File::open(path)?;
+    let file = Source::open(path)?;
     let mut dec = codec.decoder(BufReader::with_capacity(64 * 1024, file))?;
     let mut inner = [0u8; 512];
     let n = read_full(&mut dec, &mut inner).unwrap_or(0);

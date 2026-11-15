@@ -23,6 +23,7 @@ pub mod safety;
 mod sink;
 mod time;
 pub mod view;
+mod volume;
 mod xzmt;
 pub mod zone;
 
@@ -34,6 +35,7 @@ pub use entry::{Entry, EntryId, EntryKind, Timestamp};
 pub use error::{Error, LimitKind, Result};
 pub use index::{ArchiveIndex, NodeId};
 pub use safety::UnsafeReason;
+pub use volume::{first_part, is_part_name};
 pub use sink::{Conflict, ConflictFn, DiskSink, ExtractReport, ExtractSink, MemorySink, Overwrite, SkipReason, Skipped};
 
 /// Options used when opening an archive.
@@ -72,9 +74,27 @@ pub trait ArchiveReader: Send {
 }
 
 /// Opens an archive, detecting its format from its content (not its extension).
+///
+/// Any part of a split archive (`.7z.001`, `.z01`, `.part2.rar`, ...) opens
+/// the whole archive, starting from its first part.
 pub fn open(path: &Path, opts: &OpenOptions) -> Result<Box<dyn ArchiveReader>> {
+    if let Some(first) = volume::rar_first_volume(path) {
+        if !first.is_file() {
+            let name = first.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            return Err(Error::MissingVolume(name));
+        }
+        return open_as(&first, Format::Rar, opts);
+    }
     let format = detect_path(path)?;
-    open_as(path, format, opts)
+    open_as(path, format, opts).map_err(|e| match e {
+        // A plain split cut short fails as a damaged archive: name the
+        // part that is probably missing instead.
+        Error::Corrupt(_) | Error::Io(_) => match volume::Source::open(path) {
+            Ok(s) if s.is_split() => s.next_part().map(|n| Error::MissingVolume(n.to_owned())).unwrap_or(e),
+            _ => e,
+        },
+        e => e,
+    })
 }
 
 /// Opens an archive with an already known format.

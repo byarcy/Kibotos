@@ -1,7 +1,6 @@
 //! ZIP and ZIP-based files (jar, apk, cbz, ...). Opening reads only the
 //! central directory; entry metadata never touches local headers.
 
-use std::fs::File;
 use std::io::{self, BufReader};
 use std::path::Path;
 
@@ -9,11 +8,12 @@ use zip::result::ZipError;
 use zip::{ZipArchive, ZipReadOptions};
 
 use super::open_file;
+use crate::volume::Source;
 use crate::pump::{Pump, Selection};
 use crate::{ArchiveReader, Control, Entry, EntryId, EntryKind, Error, ExtractSink, Format, Result, Timestamp};
 
 pub struct ZipBackend {
-    archive: ZipArchive<BufReader<File>>,
+    archive: ZipArchive<BufReader<Source>>,
     entries: Vec<Entry>,
     password: Option<String>,
     len: u64,

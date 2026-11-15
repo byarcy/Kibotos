@@ -80,6 +80,18 @@ struct ConflictQuery {
 pub fn folder_name(archive: &Path) -> String {
     let file = archive.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let mut name = file.as_str();
+    // "fotos.7z.001" -> "fotos.7z", "fotos.z01" -> "fotos" (split archives).
+    if kibotos_core::is_part_name(name) {
+        if let Some((stem, ext)) = name.rsplit_once('.') {
+            if !stem.is_empty() {
+                name = stem;
+                if !ext.bytes().all(|b| b.is_ascii_digit()) {
+                    // .z01 and .r00 parts already lost the archive extension.
+                    name = name.trim_end_matches('.');
+                }
+            }
+        }
+    }
     // Strip archive-like extensions, at most two (".tar.gz").
     const EXTS: &[&str] = &[
         "zip", "jar", "apk", "cbz", "7z", "rar", "cbr", "tar", "gz", "tgz", "bz2", "tbz", "tbz2", "xz", "txz", "zst",
@@ -255,6 +267,9 @@ mod tests {
         assert_eq!(f(r"C:\x\copia.tar.gz"), "copia");
         assert_eq!(f(r"C:\x\copia.TGZ"), "copia");
         assert_eq!(f(r"C:\x\serie.part1.rar"), "serie");
+        assert_eq!(f(r"C:\x\fotos.7z.001"), "fotos");
+        assert_eq!(f(r"C:\x\fotos.z01"), "fotos");
+        assert_eq!(f(r"C:\x\copia.tar.gz.002"), "copia");
         assert_eq!(f(r"C:\x\notas.v2.zip"), "notas.v2");
         assert_eq!(f(r"C:\x\sin-extension"), "sin-extension (extraído)");
         assert_eq!(f(r"C:\x\.zip"), ".zip (extraído)");

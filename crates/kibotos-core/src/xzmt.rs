@@ -8,8 +8,9 @@
 //! [`MEMORY_BUDGET`]. Anything else (one block, several streams, an index it
 //! cannot read) uses the ordinary streaming decoder.
 
-use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
+
+use crate::volume::Source;
 
 /// Most memory the decoded blocks in flight may take.
 const MEMORY_BUDGET: u64 = 512 << 20;
@@ -17,7 +18,7 @@ const MEMORY_BUDGET: u64 = 512 << 20;
 const MAX_BLOCK: u64 = 128 << 20;
 
 /// Uncompressed size of each block, from a single-stream file's index.
-fn block_sizes(file: &mut File) -> io::Result<Vec<u64>> {
+fn block_sizes(file: &mut Source) -> io::Result<Vec<u64>> {
     let len = file.seek(SeekFrom::End(0))?;
     if len < 12 + 12 {
         return Err(io::ErrorKind::InvalidData.into());
@@ -86,7 +87,7 @@ fn workers_for(sizes: &[u64]) -> u32 {
 }
 
 /// A decoder for an `.xz` file: multi-threaded when that is safe and useful.
-pub(crate) fn decoder(mut file: File) -> io::Result<Box<dyn Read>> {
+pub(crate) fn decoder(mut file: Source) -> io::Result<Box<dyn Read>> {
     let workers = block_sizes(&mut file).map(|s| workers_for(&s)).unwrap_or(0);
     file.seek(SeekFrom::Start(0))?;
     if workers >= 2 {

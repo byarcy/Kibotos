@@ -1,12 +1,12 @@
 //! A single compressed file (`.gz`, `.bz2`, `.xz`, `.zst` that is not a tar).
 //! Shown as an archive with one entry named after the file.
 
-use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use super::open_file;
+use crate::volume::Source;
 use crate::pump::{Pump, Selection};
 use crate::{ArchiveReader, Codec, Control, Entry, EntryId, EntryKind, Error, ExtractSink, Format, Result, Timestamp};
 
@@ -34,7 +34,7 @@ fn inner_name(path: &Path, codec: Codec) -> String {
 }
 
 /// Uncompressed size, when it can be read cheaply without decompressing.
-fn known_size(file: &mut File, codec: Codec) -> Option<u64> {
+fn known_size(file: &mut Source, codec: Codec) -> Option<u64> {
     match codec {
         Codec::Xz => lzma_rust2::xz_uncompressed_size(&mut *file).ok(),
         Codec::Zstd => {
@@ -51,10 +51,15 @@ fn known_size(file: &mut File, codec: Codec) -> Option<u64> {
 
 impl SingleBackend {
     pub fn open(path: &Path, codec: Codec) -> Result<SingleBackend> {
-        let mut file = File::open(path)?;
-        let meta = file.metadata()?;
-        let len = meta.len();
-        let mut e = Entry::new(0, &inner_name(path, codec), EntryKind::File);
+        let mut file = Source::open(path)?;
+        let meta = std::fs::metadata(path)?;
+        let len = file.len();
+        // "notes.txt.gz.001" names the same entry as "notes.txt.gz".
+        let shown = match path.file_name().and_then(|n| n.to_str()) {
+            Some(n) if file.is_split() => path.with_file_name(&n[..n.rfind('.').unwrap_or(n.len())]),
+            _ => path.to_owned(),
+        };
+        let mut e = Entry::new(0, &inner_name(&shown, codec), EntryKind::File);
         e.size = known_size(&mut file, codec);
         e.packed = Some(len);
         e.modified = meta

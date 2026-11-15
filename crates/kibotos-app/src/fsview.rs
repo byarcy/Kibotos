@@ -95,7 +95,7 @@ pub struct Listing {
 /// Extensions Kibotós opens itself (others open with their program).
 pub fn is_archive_name(name: &str) -> bool {
     let ext = crate::icons::extension(name);
-    crate::integrate::EXTENSIONS.contains(&ext.as_str())
+    crate::integrate::EXTENSIONS.contains(&ext.as_str()) || kibotos_core::is_part_name(name)
 }
 
 fn shell_info(path: &Path, flags: windows::Win32::UI::Shell::SHGFI_FLAGS) -> SHFILEINFOW {

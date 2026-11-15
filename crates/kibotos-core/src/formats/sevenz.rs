@@ -2,13 +2,13 @@
 //! order, so extraction walks blocks and skips every block that contains
 //! no requested entry.
 
-use std::fs::File;
 use std::io::{self, BufReader};
 use std::path::{Path, PathBuf};
 
 use sevenz_rust2::{Archive, ArchiveEntry, ArchiveReader as SzReader, EntryDecision, Password};
 
 use super::open_file;
+use crate::volume::Source;
 use crate::pump::{Pump, Selection};
 use crate::{ArchiveReader, Control, Entry, EntryId, EntryKind, Error, ExtractSink, Format, Result, Timestamp};
 
@@ -19,7 +19,7 @@ const S_IFLNK: u32 = 0o120000;
 
 pub struct SevenZipBackend {
     path: PathBuf,
-    reader: SzReader<BufReader<File>>,
+    reader: SzReader<BufReader<Source>>,
     entries: Vec<Entry>,
     /// 7z file index -> entry id (anti-items have no entry).
     to_entry: Vec<Option<EntryId>>,

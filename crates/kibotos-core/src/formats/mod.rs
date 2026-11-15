@@ -7,18 +7,19 @@ pub mod single;
 pub mod tar;
 pub mod zip;
 
-use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
 
 use crate::Result;
+use crate::volume::Source;
 
 /// Read buffer for archive files. Large enough to amortize syscalls, small
 /// enough that opening an archive (index only) stays cheap.
 pub(crate) const READ_BUF: usize = 128 * 1024;
 
-pub(crate) fn open_file(path: &Path) -> Result<(BufReader<File>, u64)> {
-    let file = File::open(path)?;
-    let len = file.metadata()?.len();
-    Ok((BufReader::with_capacity(READ_BUF, file), len))
+/// Opens an archive file, joined with its other parts if it is split.
+pub(crate) fn open_file(path: &Path) -> Result<(BufReader<Source>, u64)> {
+    let source = Source::open(path)?;
+    let len = source.len();
+    Ok((BufReader::with_capacity(READ_BUF, source), len))
 }

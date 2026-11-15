@@ -614,3 +614,50 @@ fn mark_of_the_web_reaches_risky_files() {
     assert!(zone::read(&dest.join("grande.docm")).is_some());
     assert!(zone::read(&dest.join("leeme.txt")).is_none());
 }
+
+/// Splits `data` into `name.001`, `name.002`, ... of `size` bytes.
+fn split_into(dir: &Path, name: &str, data: &[u8], size: usize) {
+    for (i, chunk) in data.chunks(size).enumerate() {
+        std::fs::write(dir.join(format!("{name}.{:03}", i + 1)), chunk).unwrap();
+    }
+}
+
+#[test]
+fn split_archives_open_from_any_part() {
+    let dir = TempDir::new().unwrap();
+    let z = dir.path().join("whole.7z");
+    make_7z(&z, None, true);
+    split_into(dir.path(), "a.7z", &std::fs::read(&z).unwrap(), 50_000);
+    let zip = dir.path().join("whole.zip");
+    make_zip(&zip, None);
+    split_into(dir.path(), "b.zip", &std::fs::read(&zip).unwrap(), 40_000);
+    let tgz = compress(Codec::Gzip, &make_tar());
+    split_into(dir.path(), "c.tar.gz", &tgz, 30_000);
+
+    check_roundtrip(&dir.path().join("a.7z.002"), Format::SevenZip);
+    check_roundtrip(&dir.path().join("b.zip.001"), Format::Zip);
+    check_roundtrip(&dir.path().join("c.tar.gz.003"), Format::Tar(Some(Codec::Gzip)));
+    assert_eq!(kibotos_core::first_part(&dir.path().join("a.7z.003")), dir.path().join("a.7z.001"));
+
+    // A missing part is named, not reported as damage.
+    std::fs::remove_file(dir.path().join("a.7z.004")).unwrap();
+    match kibotos_core::open(&dir.path().join("a.7z.001"), &OpenOptions::default()) {
+        Err(Error::MissingVolume(name)) => assert_eq!(name, "a.7z.004"),
+        Err(e) => panic!("unexpected error {e}"),
+        Ok(_) => panic!("opened a split with a missing part"),
+    }
+}
+
+#[test]
+fn spanned_zip_offsets_are_rebased() {
+    // span.z01, span.z02, span.zip: a WinZip-style spanned set whose
+    // offsets count from each part.
+    for part in ["span.z01", "span.z02", "span.zip"] {
+        let mut r = open(&fixture(part));
+        assert_eq!(r.format(), Format::Zip);
+        let out = extract_all(r.as_mut());
+        assert_eq!(out["docs/readme.txt"], "hola mundo\n".repeat(50).into_bytes());
+        assert_eq!(out["data/más.txt"], "ñandú ".repeat(300).into_bytes());
+        assert_eq!(out["data/noise.bin"].len(), 9000);
+    }
+}
