@@ -82,7 +82,7 @@ pub mod es {
     pub const REG_TYPE_NAME: &str = "Archivo comprimido";
     pub const REG_OPEN: &str = "Abrir con Kibotós";
     pub const REG_EXTRACT_HERE: &str = "Extraer aquí";
-    pub const REG_EXTRACT_FOLDER: &str = "Extraer en una carpeta con su nombre";
+    pub const REG_EXTRACT_FOLDER: &str = "Extraer en carpeta";
     pub const REG_EXTRACT_DIALOG: &str = "Extraer ficheros...";
     pub const INTEGRATE_TITLE: &str = "Integración con Windows";
     pub const INTEGRATE_DONE: &str = "Kibotós se ha integrado con Windows para tu usuario (sin permisos de administrador).";

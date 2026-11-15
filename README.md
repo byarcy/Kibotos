@@ -69,12 +69,12 @@ Exit code: 0 success, 1 error, 2 cancelled.
 
 *Herramientas › Integrar con Windows* (or `kibotos.exe --integrate`) registers, for the current user only and without administrator rights:
 
-- a **Kibotós** submenu on archives (zip, jar, apk, cbz, 7z, rar, cbr, tar, gz, tgz, bz2, tbz, tbz2, xz, txz, zst, tzst) with *Abrir con Kibotós*, *Extraer aquí*, *Extraer en una carpeta con su nombre* and *Extraer ficheros...*; on Windows 11 it is under *Mostrar más opciones*;
+- a **Kibotós** submenu on archives (zip, jar, apk, cbz, 7z, rar, cbr, tar, gz, tgz, bz2, tbz, tbz2, xz, txz, zst, tzst) with *Abrir con Kibotós*, *Extraer aquí*, *Extraer en carpeta* and *Extraer ficheros...*; on Windows 11 it is under *Mostrar más opciones*;
 - Kibotós as an option in *Abrir con* and in *Configuración › Aplicaciones › Aplicaciones predeterminadas*.
 
 It never changes the default program: Windows protects that choice, so pick Kibotós once via *Abrir con › Elegir otra aplicación › Siempre*. The registered path is the .exe's current location; integrate again after moving it. *Quitar integración* (or `--unintegrate`) deletes everything it wrote under `HKEY_CURRENT_USER`, keeping other programs' entries.
 
-Labels are fixed text because registry verbs cannot show the archive name ("Extraer en «fotos»\" needs a shell extension, planned with the Windows 11 menu).
+Labels are fixed text: registry verbs cannot show the archive name. Showing it (*Extraer a "fotos"*) needs a shell extension, a DLL loaded into Explorer, and the Windows 11 top-level menu also needs a signed package; both are left for a later version. Inside Kibotós the disk-view menu does show the name.
 
 ## Formats (read and extract)
 
