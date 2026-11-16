@@ -719,6 +719,18 @@ unsafe extern "system" fn list_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
                     go_up();
                     return LRESULT(0);
                 }
+                // After navigation the first row is only focused. As in
+                // Explorer and 7-Zip, the first arrow press selects it
+                // instead of moving past it.
+                if (vk == VK_DOWN.0 || vk == VK_UP.0) && !ctrl_down() && GetKeyState(windows::Win32::UI::Input::KeyboardAndMouse::VK_SHIFT.0 as i32) >= 0 {
+                    if let Some(row) = focused_row() {
+                        if selected_rows(hwnd).is_empty() {
+                            let item = LVITEMW { state: LVIS_SELECTED, stateMask: LVIS_SELECTED, ..Default::default() };
+                            send(hwnd, LVM_SETITEMSTATE, row, &item as *const _ as isize);
+                            return LRESULT(0);
+                        }
+                    }
+                }
                 if vk == VK_ESCAPE.0 {
                     clear_filter();
                     return LRESULT(0);
@@ -1532,9 +1544,11 @@ fn on_context_menu(hwnd: HWND, lp: LPARAM) {
     if with_app(|a| a.fs.is_some()) {
         return fs_context_menu(hwnd, pt);
     }
+    // Read before borrowing the app: messages to the list reach list_proc,
+    // which borrows it too.
+    let rows = selected_rows(list);
     let Some((single, is_dir, count, filtering)) = with_app(|a| {
         let arc = a.archive.as_ref()?;
-        let rows = selected_rows(a.list);
         let nodes: Vec<NodeId> = rows.iter().filter_map(|&i| a.rows.get(i).copied()).filter(|&n| n != UP).collect();
         let single = (nodes.len() == 1).then(|| nodes[0]);
         let is_dir = single.is_some_and(|n| arc.index.is_dir(n));

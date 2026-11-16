@@ -110,6 +110,8 @@ pub mod es {
     pub const COMPRESS_MISMATCH: &str = "Las contraseñas no coinciden.";
     pub const COMPRESS_NO_NAME: &str = "Escribe el nombre del archivo que se va a crear.";
     pub const COMPRESS_ERROR_TITLE: &str = "No se pudo comprimir";
+    pub const COMPRESS_DONE_TITLE: &str = "Compresión completada";
+    pub const COMPRESS_SKIPPED_NOTE: &str = "Estos elementos no se añadieron:";
     pub const COMPRESS_SKIPPED_TITLE: &str = "Algunos elementos no se añadieron";
     pub const SKIP_LINK: &str = "es un enlace o una unión: no se sigue";
     pub const SAVE_ARCHIVE_TITLE: &str = "Guardar el archivo comprimido como";
@@ -238,6 +240,24 @@ pub fn progress_detail(files_done: u64, files_total: u64, bytes_done: u64, bytes
     )
 }
 
+/// "0:07", "12:34", "1:02:03".
+pub fn clock(secs: u64) -> String {
+    let (h, m, s) = (secs / 3600, secs / 60 % 60, secs % 60);
+    if h > 0 { format!("{h}:{m:02}:{s:02}") } else { format!("{m}:{s:02}") }
+}
+
+/// "Tiempo transcurrido: 0:12  ·  Tiempo restante: 0:34"; the estimate is
+/// left out until there is enough progress to make one.
+pub fn progress_times(elapsed: u64, remaining: Option<u64>) -> String {
+    let mut s = format!("Tiempo transcurrido: {}", clock(elapsed));
+    s.push_str("  ·  Tiempo restante: ");
+    match remaining {
+        Some(r) => s.push_str(&clock(r)),
+        None => s.push_str("calculando..."),
+    }
+    s
+}
+
 pub fn extracted(files: u64, total: u64, secs: f64, dest: &str) -> String {
     let f = if files == 1 { "archivo" } else { "archivos" };
     let secs = format!("{secs:.1}").replace('.', ",");
@@ -270,6 +290,17 @@ pub fn compressed(name: &str, files: u64, bytes_in: u64, bytes_out: u64, secs: f
     let f = if files == 1 { "archivo" } else { "archivos" };
     let secs = format!("{secs:.1}").replace('.', ",");
     format!("Creado «{name}»: {} {f}, {} → {} en {secs} s", number(files), bytes(bytes_in), bytes(bytes_out))
+}
+
+/// The message shown when an archive has been created.
+pub fn compress_done(name: &str, files: u64, bytes_in: u64, bytes_out: u64, secs: f64) -> String {
+    let f = if files == 1 { "archivo" } else { "archivos" };
+    let pct = if bytes_in == 0 { String::new() } else { format!(" ({} %)", (bytes_out as f64 * 100.0 / bytes_in as f64).round() as u64) };
+    let secs = format!("{secs:.1}").replace('.', ",");
+    format!("Se creó «{name}».
+
+{} {f}  ·  {} → {}{pct}
+Tiempo: {secs} s", number(files), bytes(bytes_in), bytes(bytes_out))
 }
 
 pub fn skipped_list(items: &[(std::path::PathBuf, kibotos_core::SkipCause)]) -> String {
@@ -329,7 +360,7 @@ pub fn blocked_reason(r: &kibotos_core::SkipReason) -> &'static str {
 }
 
 pub fn opened_in(format: &str, entries: usize, ms: f64) -> String {
-    format!("{format} · {} elementos · abierto en {ms:.0} ms", number(entries as u64))
+    format!("{format} · {} · abierto en {ms:.0} ms", folder_items(entries))
 }
 
 pub fn version() -> String {
@@ -374,6 +405,14 @@ pub fn error_message(e: &Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clocks() {
+        assert_eq!(clock(7), "0:07");
+        assert_eq!(clock(754), "12:34");
+        assert_eq!(clock(3723), "1:02:03");
+        assert!(progress_times(5, None).ends_with("calculando..."));
+    }
 
     #[test]
     fn numbers() {

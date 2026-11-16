@@ -538,14 +538,21 @@ pub fn run(owner: Option<HWND>, inputs: &[PathBuf], req: &Request) -> Outcome {
     }
 }
 
-/// Tells the user about problems: the error, or the items left out.
+/// Tells the user how it went: the archive made (and any items left
+/// out), or the error.
 /// Returns the status line for a successful run.
 pub fn report(owner: HWND, req: &Request, outcome: &Outcome) -> Option<String> {
     match outcome {
         Outcome::Done(r, took) => {
-            if !r.skipped.is_empty() {
-                let text = strings::skipped_list(&r.skipped);
-                dialogs::message(owner, t::COMPRESS_SKIPPED_TITLE, &text, MB_ICONWARNING);
+            let done = strings::compress_done(&file_name(&req.output), r.files, r.bytes_in, r.bytes_out, took.as_secs_f64());
+            if r.skipped.is_empty() {
+                dialogs::message(owner, t::COMPRESS_DONE_TITLE, &done, MB_ICONINFORMATION | MB_SETFOREGROUND);
+            } else {
+                let text = format!("{done}
+
+{}
+{}", t::COMPRESS_SKIPPED_NOTE, strings::skipped_list(&r.skipped));
+                dialogs::message(owner, t::COMPRESS_SKIPPED_TITLE, &text, MB_ICONWARNING | MB_SETFOREGROUND);
             }
             Some(strings::compressed(&file_name(&req.output), r.files, r.bytes_in, r.bytes_out, took.as_secs_f64()))
         }

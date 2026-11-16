@@ -30,6 +30,8 @@ struct State {
     hwnd: HWND,
     bar: HWND,
     detail: HWND,
+    /// Elapsed and remaining time.
+    times: HWND,
     button: HWND,
     font: HFONT,
     ctl: Arc<Control>,
@@ -88,7 +90,7 @@ fn request_cancel() {
 }
 
 fn tick() {
-    let Some((hwnd, bar, detail, show, pos, text)) = CURRENT.with(|c| {
+    let Some((hwnd, bar, detail, times, show, pos, text, time_text)) = CURRENT.with(|c| {
         let mut c = c.borrow_mut();
         let s = c.as_mut()?;
         let elapsed = s.started.elapsed();
@@ -96,12 +98,19 @@ fn tick() {
         s.shown |= show;
         let p = s.ctl.progress();
         // Bytes when sizes are known, otherwise entry count.
-        let pos = p
-            .bytes_done
-            .saturating_mul(1000)
-            .checked_div(p.bytes_total)
-            .or_else(|| (p.entries_done * 1000).checked_div(p.entries_total))
-            .unwrap_or(0);
+        let fraction = if p.bytes_total > 0 {
+            p.bytes_done as f64 / p.bytes_total as f64
+        } else if p.entries_total > 0 {
+            p.entries_done as f64 / p.entries_total as f64
+        } else {
+            0.0
+        };
+        let fraction = fraction.clamp(0.0, 1.0);
+        let pos = (fraction * 1000.0) as u64;
+        // Average speed so far; too early or too little done says nothing.
+        let secs = elapsed.as_secs_f64();
+        let remaining = (secs >= 1.0 && fraction >= 0.01).then(|| (secs * (1.0 - fraction) / fraction).ceil() as u64);
+        let time_text = strings::progress_times(elapsed.as_secs(), remaining);
         let rate = p.bytes_done as f64 / elapsed.as_secs_f64().max(0.001);
         let text = if s.cancelling {
             t::PROGRESS_CANCELLING.to_string()
@@ -110,13 +119,14 @@ fn tick() {
         } else {
             strings::progress_detail(p.entries_done, p.entries_total, p.bytes_done, p.bytes_total, rate)
         };
-        Some((s.hwnd, s.bar, s.detail, show, pos.min(1000), text))
+        Some((s.hwnd, s.bar, s.detail, s.times, show, pos, text, time_text))
     }) else {
         return;
     };
     unsafe {
         SendMessageW(bar, PBM_SETPOS, Some(WPARAM(pos as usize)), None);
         let _ = SetWindowTextW(detail, &HSTRING::from(text));
+        let _ = SetWindowTextW(times, &HSTRING::from(time_text));
         if show {
             let _ = ShowWindow(hwnd, SW_SHOWNORMAL);
         }
@@ -163,7 +173,7 @@ pub fn open(owner: Option<HWND>, title: &str, heading: &str, ctl: Arc<Control>) 
             None => GetDpiForSystem().max(96),
         };
         let s = |v| scale(v, dpi);
-        let (w, h) = (s(480), s(175));
+        let (w, h) = (s(480), s(198));
         let mut r = RECT::default();
         let have_owner = owner.is_some_and(|o| GetWindowRect(o, &mut r).is_ok());
         if !have_owner {
@@ -219,8 +229,9 @@ pub fn open(owner: Option<HWND>, title: &str, heading: &str, ctl: Arc<Control>) 
         mk(w!("STATIC"), heading, SS_PATHELLIPSIS, s(14), s(12), cw - s(28), s(20), 0);
         let bar = mk(PROGRESS_CLASSW, "", PBS_SMOOTH, s(14), s(40), cw - s(28), s(18), 0);
         let detail = mk(w!("STATIC"), t::PROGRESS_PREPARING, SS_ENDELLIPSIS, s(14), s(68), cw - s(28), s(20), 0);
+        let times = mk(w!("STATIC"), "", SS_ENDELLIPSIS, s(14), s(90), cw - s(28), s(20), 0);
         let bw = s(100);
-        let button = mk(w!("BUTTON"), t::CANCEL, WS_TABSTOP.0, cw - bw - s(14), s(100), bw, s(28), IDCANCEL.0);
+        let button = mk(w!("BUTTON"), t::CANCEL, WS_TABSTOP.0, cw - bw - s(14), s(122), bw, s(28), IDCANCEL.0);
         SendMessageW(bar, PBM_SETRANGE32, Some(WPARAM(0)), Some(LPARAM(1000)));
         SetTimer(Some(hwnd), TIMER, 100, None);
 
@@ -229,6 +240,7 @@ pub fn open(owner: Option<HWND>, title: &str, heading: &str, ctl: Arc<Control>) 
                 hwnd,
                 bar,
                 detail,
+                times,
                 button,
                 font,
                 ctl,
