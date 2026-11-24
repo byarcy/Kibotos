@@ -2,7 +2,15 @@
 
 A fast, lightweight archive manager for Windows, written in Rust.
 
-Status: **v0.3** — opens and extracts many formats, creates ZIP, 7z and tar archives, and changes them: add, delete, rename, new folders, and files edited in their program saved back into the archive. The deliverable is `dist\kibotos-v0.3.exe` (see *Build and test*).
+Status: **v0.4** — opens and extracts many formats, creates ZIP, 7z and tar archives, and changes them: add, delete, rename, new folders, and files edited in their program saved back into the archive. The single .exe installs itself for the current user. The deliverable is `dist\kibotos-v0.4.exe` (see *Build and test*).
+
+## Install
+
+1. Download `kibotos-v0.4.exe` from the [latest release](https://github.com/byarcy/Kibotos/releases/latest).
+2. Open it. The .exe is not signed, so Windows may show *Windows protegió tu PC*: choose *Más información › Ejecutar de todas formas*.
+3. Choose *Instalar*. Kibotós copies itself to `%LOCALAPPDATA%\Programs\Kibotos` (no administrator rights), adds a Start menu shortcut, an entry in *Configuración › Aplicaciones* (where it is uninstalled) and the Explorer menus. The downloaded file can then be deleted.
+
+To open archives with a double click: right-click one › *Abrir con › Elegir otra aplicación › Kibotós › Siempre* (Windows does not let a program make itself the default). Opening a newer download later offers to update the installed copy, keeping settings and integration. It also runs without installing, from any folder.
 
 ## Layout
 
@@ -73,7 +81,9 @@ Used by the Explorer context menu (step 7); they never open the main window, onl
 | `kibotos.exe --compress-zip item...` | Creates `name.zip` next to the items |
 | `kibotos.exe --compress-7z item...` | Creates `name.7z` next to the items |
 | `kibotos.exe --compress-dialog item...` | Opens the *Comprimir* dialog |
-| `kibotos.exe --integrate` / `--unintegrate` | Add / remove the Windows integration |
+| `kibotos.exe --integrate` / `--unintegrate` | Add / remove the Windows integration (settings are kept) |
+| `kibotos.exe --install` | Install this .exe for the current user (see *Installing and updating*) |
+| `kibotos.exe --uninstall [--quiet]` | Uninstall: what *Configuración › Aplicaciones › Desinstalar* runs |
 
 Exit code: 0 success, 1 error, 2 cancelled.
 
@@ -90,6 +100,12 @@ Explorer starts a context-menu command once per selected item, so choosing *Comp
 It never changes the default program: Windows protects that choice, so pick Kibotós once via *Abrir con › Elegir otra aplicación › Siempre*. Versions up to 0.2 used a single ProgID (`Kibotos.Archive`), which integrating again removes: a default chosen with those versions has to be chosen again. The registered path is the .exe's current location; integrate again after moving it. *Quitar integración* (or `--unintegrate`) deletes everything it wrote under `HKEY_CURRENT_USER`, keeping other programs' entries.
 
 Labels are fixed text: registry verbs cannot show the archive name. Showing it (*Extraer a "fotos"*) needs a shell extension, a DLL loaded into Explorer, and the Windows 11 top-level menu also needs a signed package; both are left for a later version. Inside Kibotós the disk-view menu does show the name.
+
+## Installing and updating
+
+The offer to install appears only when the running .exe came from the internet (it carries the Mark of the Web), so copies built or copied locally never ask; they can be installed from *Herramientas › Instalar en este equipo*. Installing copies the .exe to `%LOCALAPPDATA%\Programs\Kibotos\kibotos.exe` (on the system drive, which is usually the fastest: extraction from an .exe on an SSD measured 23–28 % faster than from a hard disk), removes its Mark of the Web, integrates it, and writes the shortcut and the uninstall entry under `HKEY_CURRENT_USER`. A running installed copy is renamed aside and replaced (a running .exe can be renamed but not overwritten), and the old file is removed the next time the installed copy starts. Uninstalling removes the program, the shortcut, the integration and the settings; a hidden command deletes the folder once the process has ended.
+
+**New versions.** When installing, a checkbox (ticked) turns on a daily check: a moment after the window appears, a worker thread asks GitHub's API for the latest release, at most once a day, and a dialog offers its page (*Ver la versión nueva*, *Ahora no*, *Omitir esta versión*). *Ayuda › Buscar actualizaciones* checks at any time; *Ayuda › Avisar de versiones nuevas* turns the daily check on or off. It uses WinHTTP from Windows (no TLS library inside Kibotós), delay-loaded so it costs nothing at startup; the request carries only the user agent `Kibotos/<version>`.
 
 ## Formats (read and extract)
 
@@ -139,7 +155,7 @@ Measured on the release build run from an NVMe SSD (Windows 11, 12 logical cores
 | Cold start under 100 ms | Window visible in **56 ms**; *Este equipo* listed at 106 ms |
 | List a 100,000-entry ZIP under 300 ms | **77 ms** to open, index and sort on the worker thread; rows on screen 131 ms after launch |
 | Filter under 16 ms per keystroke | **2–15 ms** on 100,000 entries (worst case: every row matches), 8–11 ms of it repainting the list |
-| Single .exe under 5 MB, no runtime dependencies | **4.7 MB** with 29 icons (0.8 MB; the 256 px images are 256-color PNG), C runtime linked statically |
+| Single .exe under 5 MB, no runtime dependencies | **4.8 MB** with 29 icons (0.8 MB; the 256 px images are 256-color PNG), C runtime linked statically |
 
 Sorting by another column takes 1–6 ms: the name order is computed once (on several threads) and other keys only compare integers, with names as tie-breaker; reversing a column needs no sort at all. Multi-block `.xz` files (from `xz -T` or 7-Zip) decode on several threads when the file's index shows every block is small; memory stays under 512 MiB.
 
@@ -170,7 +186,7 @@ ZIP is about twice as fast as 7-Zip, with archives about 4% larger. For 7z, Kibo
 
 Changing the cemu archive (260 files, 47 MB; remove a folder, rename one with 238 entries, add 5 files, a new folder and a replaced file, all at once, *Normal*): ZIP 0.05 s, tar 0.03 s, tar.zst 0.19 s, tar.gz 0.55 s, tar.xz 10.7 s, 7z 11.4 s. Every result passes `7z t` and extracts identical to the expected tree.
 
-Versions are compared on the same archives with the console tools saved under `dist\versiones` (see `dist\benchmarks\HISTORIAL.md`): v0.3 extracts as fast as v0.2 and its window appears as fast (67.9 ms against 65.6 ms, medians of 7, ranges overlapping).
+Versions are compared on the same archives with the console tools saved under `dist\versiones` (see `dist\benchmarks\HISTORIAL.md`): v0.3 extracts as fast as v0.2 and its window appears as fast (67.9 ms against 65.6 ms, medians of 7, ranges overlapping). v0.4 adds installing and the update check for 107 KB and no measurable startup time (61.7 ms against 63.3 ms for v0.3, medians of 9); `winhttp.dll` is not loaded at startup.
 
 ## Build and test
 
@@ -180,7 +196,7 @@ Requires Rust stable and the MSVC Build Tools (C++ workload).
 .\package.ps1
 ```
 
-builds the release and writes `dist\kibotos-v<version>.exe` (version from `Cargo.toml`, e.g. `kibotos-v0.3.exe`).
+builds the release and writes `dist\kibotos-v<version>.exe` (version from `Cargo.toml`, e.g. `kibotos-v0.4.exe`).
 
 ```bash
 cargo test -p kibotos-core
