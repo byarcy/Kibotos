@@ -16,9 +16,11 @@ mod codepage;
 mod control;
 pub mod create;
 mod detect;
+pub mod edit;
 mod entry;
 mod error;
 mod formats;
+mod hash;
 mod index;
 mod lzw;
 mod pump;
@@ -37,6 +39,7 @@ pub use create::{CreateFormat, CreateOptions, CreateReport, Level, SkipCause, cr
 pub use detect::{Codec, Format, detect_path};
 pub use entry::{Entry, EntryId, EntryKind, Timestamp};
 pub use error::{Error, LimitKind, Result};
+pub use hash::sha256;
 pub use index::{ArchiveIndex, NodeId};
 pub use safety::UnsafeReason;
 pub use volume::{first_part, is_part_name};
@@ -52,8 +55,8 @@ pub struct OpenOptions {
 
 /// A read-only view of an opened archive.
 ///
-/// Writing will be a separate `ArchiveWriter` trait (planned for v0.2), so
-/// readers never need to change when it is added.
+/// Readers never write: new archives come from [`create()`] and changes to an
+/// existing one from [`edit::update`], which write a new file.
 pub trait ArchiveReader: Send {
     /// The detected format.
     fn format(&self) -> Format;

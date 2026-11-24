@@ -20,7 +20,7 @@ pub struct TarBackend {
     len: u64,
 }
 
-fn map_tar(e: io::Error) -> Error {
+pub(crate) fn map_tar(e: io::Error) -> Error {
     match e.kind() {
         io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied | io::ErrorKind::OutOfMemory => Error::Io(e),
         _ => Error::Corrupt(e.to_string()),
@@ -67,6 +67,17 @@ impl TarBackend {
     }
 }
 
+/// The entry kind of a tar record; `None` for records that are not listed
+/// (devices, FIFOs, metadata records). Entry ids count listed records only.
+pub(crate) fn kind_of(t: EntryType) -> Option<EntryKind> {
+    match t {
+        EntryType::Regular | EntryType::Continuous | EntryType::GNUSparse => Some(EntryKind::File),
+        EntryType::Directory => Some(EntryKind::Dir),
+        EntryType::Symlink | EntryType::Link => Some(EntryKind::Link),
+        _ => None,
+    }
+}
+
 /// Object-safe view of `tar::Entry<R>` for any reader type.
 trait TarItem: Read {
     fn to_entry(&self, id: usize, plain: bool) -> Option<Entry>;
@@ -75,13 +86,7 @@ trait TarItem: Read {
 impl<R: Read> TarItem for tar::Entry<'_, R> {
     fn to_entry(&self, id: usize, plain: bool) -> Option<Entry> {
         let header = self.header();
-        let kind = match header.entry_type() {
-            EntryType::Regular | EntryType::Continuous | EntryType::GNUSparse => EntryKind::File,
-            EntryType::Directory => EntryKind::Dir,
-            EntryType::Symlink | EntryType::Link => EntryKind::Link,
-            // Devices, FIFOs and metadata records are not files.
-            _ => return None,
-        };
+        let kind = kind_of(header.entry_type())?;
         let path = String::from_utf8_lossy(&self.path_bytes()).into_owned();
         let mut e = Entry::new(id, &path, kind);
         if kind == EntryKind::File {

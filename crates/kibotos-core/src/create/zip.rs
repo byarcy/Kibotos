@@ -22,7 +22,7 @@ const U32_MAX: u64 = u32::MAX as u64;
 const STORED: u16 = 0;
 const DEFLATED: u16 = 8;
 
-fn deflate_level(level: Level) -> Option<u32> {
+pub(crate) fn deflate_level(level: Level) -> Option<u32> {
     match level {
         Level::Store => None,
         Level::Fast => Some(1),

@@ -86,6 +86,12 @@ impl Control {
         self.bytes_done.fetch_add(n, Relaxed) + n
     }
 
+    /// Starts counting again from zero (a second phase of one operation).
+    pub(crate) fn restart(&self) {
+        self.bytes_done.store(0, Relaxed);
+        self.entries_done.store(0, Relaxed);
+    }
+
     pub(crate) fn add_entry(&self) {
         self.entries_done.fetch_add(1, Relaxed);
     }

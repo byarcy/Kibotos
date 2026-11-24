@@ -18,6 +18,8 @@ pub enum SortKey {
     Size,
     Packed,
     Modified,
+    /// The CRC-32 the archive stores (entries without one first).
+    Crc,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -135,7 +137,7 @@ impl Ordering {
         }
         let value = |n: NodeId| -> i64 {
             // Folders have no size, so for size keys they stay sorted by name.
-            if index.is_dir(n) && matches!(key, SortKey::Size | SortKey::Packed) {
+            if index.is_dir(n) && matches!(key, SortKey::Size | SortKey::Packed | SortKey::Crc) {
                 return 0;
             }
             let e = entry_of(index, entries, n);
@@ -144,6 +146,7 @@ impl Ordering {
                 SortKey::Size => e.and_then(|e| e.size).map_or(-1, |v| v as i64),
                 SortKey::Packed => e.and_then(|e| e.packed).map_or(-1, |v| v as i64),
                 SortKey::Modified => e.and_then(|e| e.modified).map_or(i64::MIN, |t| t.sort_key()),
+                SortKey::Crc => e.and_then(|e| e.crc).map_or(-1, i64::from),
             }
         };
         let mut keyed: Vec<(bool, i64, u32, NodeId)> =
@@ -257,11 +260,12 @@ mod tests {
             let mut e = Entry::new(i, &p, EntryKind::File);
             e.size = Some((i % 1000) as u64);
             e.modified = Some(Timestamp::Utc((i % 500) as i64));
+            e.crc = (i % 5 != 0).then_some((i * 2_654_435_761 % 4_000_000_000) as u32);
             v.push(e);
         }
         let ix = ArchiveIndex::build(&v);
         let names = Ordering::by_name(&ix);
-        for key in [SortKey::Name, SortKey::Size, SortKey::Packed, SortKey::Modified] {
+        for key in [SortKey::Name, SortKey::Size, SortKey::Packed, SortKey::Modified, SortKey::Crc] {
             let asc = Ordering::by_key(&ix, &v, key, &names);
             let desc = asc.reversed(&ix);
             // Reference: one comparison sort over everything.
@@ -277,10 +281,11 @@ mod tests {
                         let e = ix.entry(n).map(|id| &v[id as usize]);
                         match key {
                             SortKey::Name => 0,
-                            SortKey::Size | SortKey::Packed if ix.is_dir(n) => 0,
+                            SortKey::Size | SortKey::Packed | SortKey::Crc if ix.is_dir(n) => 0,
                             SortKey::Size => e.and_then(|e| e.size).map_or(-1, |x| x as i64),
                             SortKey::Packed => e.and_then(|e| e.packed).map_or(-1, |x| x as i64),
                             SortKey::Modified => e.and_then(|e| e.modified).map_or(i64::MIN, |t| t.sort_key()),
+                            SortKey::Crc => e.and_then(|e| e.crc).map_or(-1, i64::from),
                         }
                     };
                     let o = val(a).cmp(&val(b)).then(name);

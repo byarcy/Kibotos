@@ -7,9 +7,9 @@
 //! renamed into place only when complete, so a cancelled or failed run never
 //! leaves a half-written archive under the final name.
 
-mod sevenz;
-mod tar;
-mod zip;
+pub(crate) mod sevenz;
+pub(crate) mod tar;
+pub(crate) mod zip;
 
 use std::fs::File;
 use std::io::{self, Read};
@@ -270,7 +270,7 @@ pub(crate) fn threads(opts: &CreateOptions) -> usize {
 }
 
 /// The temporary file the archive is written to before it gets its name.
-fn temp_path(output: &Path) -> PathBuf {
+pub(crate) fn temp_path(output: &Path) -> PathBuf {
     let name = output.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     output.with_file_name(format!("{name}.kibotos-part"))
 }

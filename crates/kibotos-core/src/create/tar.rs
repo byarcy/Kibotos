@@ -10,7 +10,7 @@ use super::{Counted, CreateOptions, CreateReport, Item, Level, SkipCause, io_err
 use crate::{Codec, Control, Error, Result};
 
 /// The output stream: the file, possibly behind a compressor.
-enum Out {
+pub(crate) enum Out {
     Plain(BufWriter<File>),
     Gzip(flate2::write::GzEncoder<BufWriter<File>>),
     Bzip2(bzip2::write::BzEncoder<BufWriter<File>>),
@@ -44,7 +44,7 @@ impl Write for Out {
 }
 
 impl Out {
-    fn finish(self) -> io::Result<()> {
+    pub(crate) fn finish(self) -> io::Result<()> {
         let mut file = match self {
             Out::Plain(w) => w,
             Out::Gzip(w) => w.finish()?,
@@ -57,7 +57,7 @@ impl Out {
     }
 }
 
-fn open_out(temp: &Path, codec: Option<Codec>, level: Level, threads: usize) -> Result<Out> {
+pub(crate) fn open_out(temp: &Path, codec: Option<Codec>, level: Level, threads: usize) -> Result<Out> {
     let file = BufWriter::with_capacity(1 << 20, File::create(temp)?);
     let pick = |store: u32, fast: u32, normal: u32, max: u32| match level {
         Level::Store => store,
@@ -107,7 +107,7 @@ fn header(item: &Item) -> tar::Header {
     h
 }
 
-pub(super) fn write(
+pub(crate) fn write(
     temp: &Path,
     items: &[Item],
     codec: Option<Codec>,
@@ -119,29 +119,36 @@ pub(super) fn write(
     let mut b = tar::Builder::new(out);
     for item in items {
         ctl.check()?;
-        if item.dir {
-            b.append_data(&mut header(item), format!("{}/", item.name), io::empty()).map_err(|e| io_err(e, ctl))?;
-            report.dirs += 1;
-            continue;
-        }
-        let file = match File::open(&item.path) {
-            Ok(f) => f,
-            Err(e) => {
-                report.skipped.push((item.path.clone(), SkipCause::Unreadable(e.to_string())));
-                continue;
-            }
-        };
-        // tar records the size before the data: if the file changed size
-        // since it was listed, store what was listed (padding or cutting).
-        let reader = Counted { inner: io::BufReader::with_capacity(1 << 20, file), ctl };
-        let data = reader.take(item.size).chain(io::repeat(0)).take(item.size);
-        b.append_data(&mut header(item), &item.name, data).map_err(|e| io_err(e, ctl))?;
-        ctl.add_entry();
-        report.files += 1;
-        report.bytes_in += item.size;
+        append_item(&mut b, item, ctl, report)?;
     }
     let out = b.into_inner().map_err(|e| io_err(e, ctl))?;
     out.finish().map_err(|e| io_err(e, ctl))?;
+    Ok(())
+}
+
+/// Appends one file or folder from disk. An unreadable file is reported
+/// in `report.skipped`, not as an error.
+pub(crate) fn append_item<W: Write>(b: &mut tar::Builder<W>, item: &Item, ctl: &Control, report: &mut CreateReport) -> Result<()> {
+    if item.dir {
+        b.append_data(&mut header(item), format!("{}/", item.name), io::empty()).map_err(|e| io_err(e, ctl))?;
+        report.dirs += 1;
+        return Ok(());
+    }
+    let file = match File::open(&item.path) {
+        Ok(f) => f,
+        Err(e) => {
+            report.skipped.push((item.path.clone(), SkipCause::Unreadable(e.to_string())));
+            return Ok(());
+        }
+    };
+    // tar records the size before the data: if the file changed size
+    // since it was listed, store what was listed (padding or cutting).
+    let reader = Counted { inner: io::BufReader::with_capacity(1 << 20, file), ctl };
+    let data = reader.take(item.size).chain(io::repeat(0)).take(item.size);
+    b.append_data(&mut header(item), &item.name, data).map_err(|e| io_err(e, ctl))?;
+    ctl.add_entry();
+    report.files += 1;
+    report.bytes_in += item.size;
     Ok(())
 }
 

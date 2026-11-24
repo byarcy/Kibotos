@@ -16,6 +16,8 @@ USAGE:
   kibotos-cli list    <archive> [-p PASSWORD] [-q] [--filter TEXT]
   kibotos-cli extract <archive> <dest> [-p PASSWORD] [--only PATH]... [--keep] [--threads N]
   kibotos-cli create  <out> <file or folder>... [-f FORMAT] [-l LEVEL] [-p PASSWORD] [--threads N]
+  kibotos-cli update  <archive> [--rm PATH]... [--mv OLD=NEW]... [--add FILE]... [--into FOLDER]
+                      [--mkdir PATH]... [--replace PATH=FILE]... [-l LEVEL] [-p PASSWORD]
   kibotos-cli gen-zip <out.zip> <entries>
 
   -q          print only timings, not the entries
@@ -25,6 +27,7 @@ USAGE:
   --threads N writer threads for small files (0 = write on the extraction thread)
   -f          zip (default), 7z, tar, tar.gz, tar.bz2, tar.xz, tar.zst
   -l          store, fast, normal (default), max
+  update      change an archive in place (a folder path in --rm or --mv takes its content along)
   gen-zip     write a test ZIP with <entries> small stored files
 ";
 
@@ -39,6 +42,7 @@ fn main() -> ExitCode {
         Some("extract") => cmd_extract(&args[1..]),
         Some("gen-zip") => cmd_gen_zip(&args[1..]),
         Some("create") => cmd_create(&args[1..]),
+        Some("update") => cmd_update(&args[1..]),
         _ => {
             eprint!("{USAGE}");
             return ExitCode::from(2);
@@ -213,6 +217,72 @@ fn cmd_extract(args: &[String]) -> Result<(), String> {
     println!("written      {} files, {} folders, {} bytes ({:.1} MB/s)", r.files, r.dirs, r.bytes, r.bytes as f64 / secs / 1e6);
     println!("skipped      {}", r.skipped.len());
     res.map_err(|e| e.to_string())
+}
+
+fn cmd_update(args: &[String]) -> Result<(), String> {
+    use kibotos_core::Level;
+    use kibotos_core::edit::{Changes, UpdateOptions, update};
+    let mut it = args.iter();
+    let archive = PathBuf::from(it.next().ok_or("usage: update <archive> ...")?);
+    let mut opts = UpdateOptions::default();
+    let (mut rm, mut mv, mut replace) = (Vec::new(), Vec::new(), Vec::new());
+    let mut changes = Changes::default();
+    while let Some(a) = it.next() {
+        let mut value = || it.next().cloned().ok_or(format!("{a} needs a value"));
+        match a.as_str() {
+            "--rm" => rm.push(value()?),
+            "--mv" => mv.push(value()?.split_once('=').map(|(a, b)| (a.to_owned(), b.to_owned())).ok_or("--mv OLD=NEW")?),
+            "--replace" => replace.push(value()?.split_once('=').map(|(a, b)| (a.to_owned(), PathBuf::from(b))).ok_or("--replace PATH=FILE")?),
+            "--add" => changes.add.push(PathBuf::from(value()?)),
+            "--into" => changes.add_into = value()?,
+            "--mkdir" => changes.new_dirs.push(value()?),
+            "-p" => opts.password = Some(value()?),
+            "-l" => {
+                opts.level = match value()?.as_str() {
+                    "store" => Level::Store,
+                    "fast" => Level::Fast,
+                    "normal" => Level::Normal,
+                    "max" => Level::Maximum,
+                    other => return Err(format!("unknown level {other}")),
+                }
+            }
+            other => return Err(format!("unknown option {other}")),
+        }
+    }
+    opts.encrypt_new = opts.password.is_some();
+    let reader = kibotos_core::open(&archive, &OpenOptions { password: opts.password.clone() }).map_err(|e| e.to_string())?;
+    let under = |path: &str, prefix: &str| path == prefix || path.starts_with(&format!("{prefix}/"));
+    for e in reader.entries() {
+        if rm.iter().any(|p| under(&e.path, p)) {
+            changes.remove.push(e.id);
+        }
+        if let Some((old, new)) = mv.iter().find(|(old, _)| under(&e.path, old)) {
+            changes.rename.push((e.id, format!("{new}{}", &e.path[old.len()..])));
+        }
+        if let Some((_, file)) = replace.iter().find(|(p, _)| *p == *e.path) {
+            changes.replace.push((e.id, file.clone()));
+        }
+    }
+    drop(reader);
+    let t0 = Instant::now();
+    let report = update(&archive, &changes, &opts, &Control::new()).map_err(|e| e.to_string())?;
+    println!(
+        "update       {}
+removed      {}
+renamed      {}
+replaced     {}
+added        {}
+size         {} bytes
+skipped      {}",
+        ms(t0.elapsed()),
+        report.removed,
+        report.renamed,
+        report.replaced,
+        report.added,
+        report.bytes_out,
+        report.skipped.len()
+    );
+    Ok(())
 }
 
 fn cmd_create(args: &[String]) -> Result<(), String> {

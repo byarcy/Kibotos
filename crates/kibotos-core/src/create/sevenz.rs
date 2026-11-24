@@ -117,7 +117,7 @@ fn compress_block(block: &[&Item], methods: Arc<Vec<EncoderConfiguration>>, ctl:
     Done { block: prepare_block(methods, entries, readers), skipped, files, bytes }
 }
 
-pub(super) fn write(temp: &Path, items: &[Item], opts: &CreateOptions, ctl: &Control, report: &mut CreateReport) -> Result<()> {
+pub(crate) fn write(temp: &Path, items: &[Item], opts: &CreateOptions, ctl: &Control, report: &mut CreateReport) -> Result<()> {
     let level = preset(opts.level);
     let store = opts.level == Level::Store;
     let dict = u64::from(lzma_rust2::Lzma2Options::with_preset(level).lzma_options.dict_size);

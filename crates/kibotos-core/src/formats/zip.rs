@@ -113,7 +113,7 @@ impl ArchiveReader for ZipBackend {
     }
 }
 
-fn map_err(e: ZipError) -> Error {
+pub(crate) fn map_err(e: ZipError) -> Error {
     match e {
         ZipError::Io(e) => Error::from_read(e),
         ZipError::UnsupportedArchive(ZipError::PASSWORD_REQUIRED) => Error::PasswordRequired,
