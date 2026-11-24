@@ -15,6 +15,17 @@ codegen-units = 1
 panic = "abort"
 strip = true
 
+# Development builds: our crates keep line numbers (for backtraces), the
+# dependencies and build scripts (including the C/C++ code of unRAR, zstd
+# and bzip2) keep no debug info. This about halves target\debug and
+# speeds up compiling; release builds are not affected.
+[profile.dev]
+debug = "line-tables-only"
+
 # Benchmarks and tests of the core should run with optimized dependencies.
 [profile.dev.package."*"]
 opt-level = 2
+debug = false
+
+[profile.dev.build-override]
+debug = false
