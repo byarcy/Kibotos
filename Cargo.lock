@@ -370,7 +370,7 @@ dependencies = [
 
 [[package]]
 name = "kibotos-app"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "kibotos-core",
  "windows",
@@ -379,7 +379,7 @@ dependencies = [
 
 [[package]]
 name = "kibotos-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bzip2",
  "flate2",
@@ -388,6 +388,7 @@ dependencies = [
  "lzxd",
  "msi",
  "sevenz-rust2",
+ "sha2",
  "tar",
  "tempfile",
  "unrar_sys",

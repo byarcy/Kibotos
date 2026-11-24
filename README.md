@@ -2,7 +2,7 @@
 
 A fast, lightweight archive manager for Windows, written in Rust.
 
-Status: **v0.2** — opens and extracts many formats, and creates ZIP, 7z and tar archives. The deliverable is `dist\kibotos-v0.2.exe` (see *Build and test*). Editing existing archives (adding or removing files) is not supported yet.
+Status: **v0.3** — opens and extracts many formats, creates ZIP, 7z and tar archives, and changes them: add, delete, rename, new folders, and files edited in their program saved back into the archive. The deliverable is `dist\kibotos-v0.3.exe` (see *Build and test*).
 
 ## Layout
 
@@ -11,11 +11,12 @@ Status: **v0.2** — opens and extracts many formats, and creates ZIP, 7z and ta
 | `crates/kibotos-core` | Format backends behind one `ArchiveReader` trait, the in-memory folder index, path validation and extraction. No UI code. |
 | `crates/kibotos-core/src/bin/kibotos-cli.rs` | Console tool to list and extract archives with timings. |
 | `crates/kibotos-app` | `kibotos.exe`: native Win32 window with a virtual ListView. UI text lives in `src/strings.rs`. |
+| `crates/kibotos-app/assets` | Icons: `make_icons.ps1` draws the app icon and one icon per file type from `logo-source.png`. |
 | `licenses/unRAR-license.txt` | License of the unRAR code used to read RAR archives. |
 
 The release build is a single `kibotos.exe` with the C runtime linked statically (see `.cargo/config.toml`), so it needs no Visual C++ Redistributable.
 
-Files opened from an archive go to `%TEMP%\Kibotos\<process>`, removed on exit (leftovers from closed instances are removed at the next start). If an opened file was edited, Kibotós offers to save a copy next to the archive, since it cannot update archives yet. Extracted and opened files inherit the archive's Mark of the Web, so SmartScreen and Office Protected View still apply.
+Files opened from an archive go to `%TEMP%\Kibotos\<process>`, removed on exit (leftovers from closed instances are removed at the next start). If an opened file was saved by its program, Kibotós offers to save it back into the archive when you return to its window, and again on exit (for archives it cannot change, a copy next to the archive). Extracted and opened files inherit the archive's Mark of the Web, so SmartScreen and Office Protected View still apply.
 
 Set `KIBOTOS_TIMING=<file>` to log startup timings (milliseconds since process creation) to that file.
 
@@ -37,17 +38,22 @@ For any selection, the context menu also offers *Comprimir en "nombre.zip"*, *Co
 | Typing in the list, Ctrl+F | Filter names across the whole archive |
 | Ctrl+E | Extract the selection, or the whole folder / filter result if nothing is selected |
 | Ctrl+N | Disk view: compress the selection (the *Comprimir* dialog) |
+| Del | Archive view: remove the selection from the archive (asks first) |
+| F2, or a slow second click | Archive view: rename a file or folder |
+| Ctrl+Shift+N | Archive view: new folder in the current folder |
 | Esc | Clear the filter; cancel an extraction in the progress window |
 | Ctrl+O | Open an archive |
 | Ctrl+L, Alt+D | Type a path in the path bar |
 | F5 | Read the folder or archive again |
 | Ctrl+A | Select all rows |
 | Alt+Enter | Properties of the selection (sizes, ratio, date, CRC, encryption) |
-| Menu key, Shift+F10, right-click | Context menu: Abrir, Abrir con..., Extraer..., Extraer junto al comprimido, Mostrar en su carpeta, Copiar ruta, Propiedades |
+| Menu key, Shift+F10, right-click | Context menu: Abrir, Abrir con..., Extraer..., Extraer junto al comprimido, Mostrar en su carpeta, Copiar ruta, Calcular SHA-256, Propiedades, Cambiar nombre, Eliminar, Nueva carpeta |
+
+The archive view has a **CRC32** column, the checksum each ZIP, 7z or RAR entry stores (sortable; tar and single compressed files have none). *Calcular SHA-256* decompresses the selected files on a worker thread and shows their SHA-256, with a button that copies them in `sha256sum` format (`<hash> *<path>`).
 
 ## Drag and drop
 
-Drop an archive on the window to open it. Drag rows out of the list to extract them:
+Drop an archive on the window to open it. Drop files or folders on an open archive to **add** them: Kibotós asks first, and says how many existing items will be replaced; dropped on a folder row, they go into that folder. Drag rows out of the list to extract them:
 
 - **To Explorer, the desktop or a file dialog**, the files are extracted **straight into the folder you drop on** (also a subfolder icon or a navigation-pane item), written once, with Kibotós' own progress, overwrite questions and safety checks. Windows does not tell a drag source where it was dropped, so the drag carries a tiny hidden marker file; when the shell copies it, its change notification reveals the exact folder, and Kibotós deletes the marker and extracts there.
 - **To any other program** (mail, editors, other file managers), the rows are extracted to the temporary folder when the mouse button is released, and the program receives those files — what other archivers do for every target.
@@ -77,11 +83,11 @@ Exit code: 0 success, 1 error, 2 cancelled.
 
 - a **Kibotós** submenu on archives (zip, jar, apk, cbz, 7z, rar, cbr, tar, gz, tgz, bz2, tbz, tbz2, xz, txz, zst, tzst, lz4, tlz4, lzma, tlz, lz, Z, taz, iso, cab, msi, 001) with *Abrir con Kibotós*, *Extraer aquí*, *Extraer en carpeta* and *Extraer ficheros...*; on Windows 11 it is under *Mostrar más opciones*;
 - a **Comprimir con Kibotós** submenu on every file and folder, with *Comprimir en ZIP*, *Comprimir en 7z* and *Comprimir...*;
-- Kibotós as an option in *Abrir con* and in *Configuración › Aplicaciones › Aplicaciones predeterminadas*.
+- Kibotós as an option in *Abrir con* and in *Configuración › Aplicaciones › Aplicaciones predeterminadas*, with **an icon per type**: a page with a colored band (blue ZIP family, green 7z, purple RAR, orange to red for tar and compressors, gray for disc images and Windows packages), the extension and the logo. Each extension has its own ProgID (`Kibotos.zip`, `Kibotos.7z`...) pointing to its icon inside the .exe.
 
 Explorer starts a context-menu command once per selected item, so choosing *Comprimir en ZIP* with 40 files selected starts 40 processes. They find each other (a named mutex and a message-only window per folder and command), hand their paths to the first one and exit, and that one makes a single archive once no new path has arrived for 0.4 s.
 
-It never changes the default program: Windows protects that choice, so pick Kibotós once via *Abrir con › Elegir otra aplicación › Siempre*. The registered path is the .exe's current location; integrate again after moving it. *Quitar integración* (or `--unintegrate`) deletes everything it wrote under `HKEY_CURRENT_USER`, keeping other programs' entries.
+It never changes the default program: Windows protects that choice, so pick Kibotós once via *Abrir con › Elegir otra aplicación › Siempre*. Versions up to 0.2 used a single ProgID (`Kibotos.Archive`), which integrating again removes: a default chosen with those versions has to be chosen again. The registered path is the .exe's current location; integrate again after moving it. *Quitar integración* (or `--unintegrate`) deletes everything it wrote under `HKEY_CURRENT_USER`, keeping other programs' entries.
 
 Labels are fixed text: registry verbs cannot show the archive name. Showing it (*Extraer a "fotos"*) needs a shell extension, a DLL loaded into Explorer, and the Windows 11 top-level menu also needs a signed package; both are left for a later version. Inside Kibotós the disk-view menu does show the name.
 
@@ -111,6 +117,17 @@ Levels: *Sin compresión*, *Rápido*, *Normal* and *Máximo*. The dialog remembe
 
 The archive is written to `name.kibotos-part` and renamed when complete, so cancelling or an error never leaves a half-written archive. Links and junctions inside the folders are not followed (they are listed as skipped), files that cannot be read are skipped and listed at the end, and an archive created inside one of its own folders does not include itself.
 
+## Changing archives
+
+| Format | How it is changed |
+|---|---|
+| ZIP (jar, apk, cbz) | Entries that stay are **copied still compressed** (and still encrypted), so renaming or deleting in a large ZIP costs little more than copying the file. Added and replaced files are compressed at the remembered level; in an encrypted archive they are encrypted too (AES-256, after checking the password). |
+| tar, tar.gz, tar.bz2, tar.xz, tar.zst | Rewritten in one pass from the old stream to the new one; kept entries keep their headers (links, modes, owners). |
+| 7z | Kept entries are extracted to a hidden folder next to the archive and everything is compressed again (solid blocks cannot be cut). Encrypted archives stay encrypted, and an archive whose file names were encrypted keeps them encrypted. |
+| RAR, ISO, CAB, MSI, single compressed files, split archives | Read-only. RAR never: its license forbids creating RAR archives. |
+
+The new archive is written to `name.kibotos-part`, opened again to check that it lists what was planned (ZIP and 7z), and only then renamed over the original: a failure, a cancellation or a full disk leaves the original untouched. Changes in the list: *Eliminar* (Del), *Cambiar nombre* (F2; a folder takes its content along; names Windows reserves or cannot store are refused), *Nueva carpeta* (Ctrl+Shift+N, then type its name), and files dropped on the list. Files opened from the archive and saved by their program are offered back when Kibotós comes to the front (*Actualizar el comprimido* or *Ahora no*; the latter is offered again on exit).
+
 ZIP passwords have no defined encoding: 7-Zip and most Windows tools use the ANSI code page. Kibotós writes the password that way when it can (so 7-Zip opens the archive) and, when reading, tries UTF-8 and then ANSI. The dialog warns that a ZIP password with accents may not open in other programs; 7z has no such problem.
 
 ## Performance
@@ -122,7 +139,7 @@ Measured on the release build run from an NVMe SSD (Windows 11, 12 logical cores
 | Cold start under 100 ms | Window visible in **56 ms**; *Este equipo* listed at 106 ms |
 | List a 100,000-entry ZIP under 300 ms | **77 ms** to open, index and sort on the worker thread; rows on screen 131 ms after launch |
 | Filter under 16 ms per keystroke | **2–15 ms** on 100,000 entries (worst case: every row matches), 8–11 ms of it repainting the list |
-| Single .exe under 5 MB, no runtime dependencies | **3.6 MB** (1.9 MB before archive creation), C runtime linked statically |
+| Single .exe under 5 MB, no runtime dependencies | **4.7 MB** with 29 icons (0.8 MB; the 256 px images are 256-color PNG), C runtime linked statically |
 
 Sorting by another column takes 1–6 ms: the name order is computed once (on several threads) and other keys only compare integers, with names as tie-breaker; reversing a column needs no sort at all. Multi-block `.xz` files (from `xz -T` or 7-Zip) decode on several threads when the file's index shows every block is small; memory stays under 512 MiB.
 
@@ -151,6 +168,10 @@ Creating archives, compared with 7-Zip 26.05 (`kibotos-cli create` vs `7z a`, *N
 
 ZIP is about twice as fast as 7-Zip, with archives about 4% larger. For 7z, Kibotós compresses independent blocks in parallel: on a large input it finishes sooner, at the cost of a slightly larger archive; on a single folder of about 50 MB (one or two blocks) 7-Zip's faster LZMA encoder wins (cemu: 10 s against 6.9 s).
 
+Changing the cemu archive (260 files, 47 MB; remove a folder, rename one with 238 entries, add 5 files, a new folder and a replaced file, all at once, *Normal*): ZIP 0.05 s, tar 0.03 s, tar.zst 0.19 s, tar.gz 0.55 s, tar.xz 10.7 s, 7z 11.4 s. Every result passes `7z t` and extracts identical to the expected tree.
+
+Versions are compared on the same archives with the console tools saved under `dist\versiones` (see `dist\benchmarks\HISTORIAL.md`): v0.3 extracts as fast as v0.2 and its window appears as fast (67.9 ms against 65.6 ms, medians of 7, ranges overlapping).
+
 ## Build and test
 
 Requires Rust stable and the MSVC Build Tools (C++ workload).
@@ -159,7 +180,7 @@ Requires Rust stable and the MSVC Build Tools (C++ workload).
 .\package.ps1
 ```
 
-builds the release and writes `dist\kibotos-v<version>.exe` (version from `Cargo.toml`, e.g. `kibotos-v0.2.exe`).
+builds the release and writes `dist\kibotos-v<version>.exe` (version from `Cargo.toml`, e.g. `kibotos-v0.3.exe`).
 
 ```bash
 cargo test -p kibotos-core
@@ -185,6 +206,10 @@ target/release/kibotos-cli extract archive.rar out -p PASSWORD --only docs/2026
 
 ```bash
 target/release/kibotos-cli create backup.7z Documents Photos -f 7z -l max -p PASSWORD
+```
+
+```bash
+target/release/kibotos-cli update backup.zip --rm old --mv docs=notas --add report.pdf --into notas --mkdir nueva
 ```
 
 ```bash
