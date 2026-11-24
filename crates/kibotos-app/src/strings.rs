@@ -14,7 +14,10 @@ pub mod es {
     pub const MENU_TOOLS: &str = "&Herramientas";
     pub const MENU_INTEGRATE: &str = "&Integrar con Windows";
     pub const MENU_UNINTEGRATE: &str = "&Quitar integración";
+    pub const MENU_INSTALL: &str = "Instalar en este &equipo...";
     pub const MENU_HELP: &str = "Ay&uda";
+    pub const MENU_CHECK_UPDATES: &str = "&Buscar actualizaciones...";
+    pub const MENU_AUTO_UPDATES: &str = "A&visar de versiones nuevas";
     pub const MENU_ABOUT: &str = "&Acerca de Kibotós";
 
     pub const COL_NAME: &str = "Nombre";
@@ -78,7 +81,7 @@ pub mod es {
     pub const COPIES_SAVED: &str = "Copias guardadas";
     pub const COPY_FAILED: &str = "No se pudo guardar la copia de";
 
-    pub const CLI_USAGE: &str = "Uso:\n\n  kibotos.exe [archivo]\n      Abre el archivo comprimido.\n\n  kibotos.exe --extract-here archivo...\n      Extrae junto al archivo (en una carpeta con su nombre si tiene varios elementos sueltos).\n\n  kibotos.exe --extract-to-folder archivo...\n      Extrae en una carpeta con el nombre del archivo.\n\n  kibotos.exe --extract-dialog archivo...\n      Pregunta dónde extraer.\n\n  kibotos.exe --integrate | --unintegrate\n      Añade o quita el menú contextual y la opción «Abrir con» (solo para tu usuario).\n\n  kibotos.exe --compress-zip | --compress-7z | --compress-dialog elemento...\n      Comprime los archivos y carpetas en un ZIP o un 7z junto a ellos, o pregunta cómo.";
+    pub const CLI_USAGE: &str = "Uso:\n\n  kibotos.exe [archivo]\n      Abre el archivo comprimido.\n\n  kibotos.exe --extract-here archivo...\n      Extrae junto al archivo (en una carpeta con su nombre si tiene varios elementos sueltos).\n\n  kibotos.exe --extract-to-folder archivo...\n      Extrae en una carpeta con el nombre del archivo.\n\n  kibotos.exe --extract-dialog archivo...\n      Pregunta dónde extraer.\n\n  kibotos.exe --integrate | --unintegrate\n      Añade o quita el menú contextual y la opción «Abrir con» (solo para tu usuario).\n\n  kibotos.exe --compress-zip | --compress-7z | --compress-dialog elemento...\n      Comprime los archivos y carpetas en un ZIP o un 7z junto a ellos, o pregunta cómo.\n\n  kibotos.exe --install | --uninstall [--quiet]\n      Instala Kibotós para tu usuario, o lo desinstala.";
 
     // Windows integration (registry labels and messages)
     pub const REG_TYPE_NAME: &str = "Archivo comprimido";
@@ -122,9 +125,32 @@ pub mod es {
     pub const INTEGRATE_MENU: &str = "Clic derecho en un comprimido → «Kibotós». En Windows 11 está dentro de «Mostrar más opciones».";
     pub const INTEGRATE_DEFAULT: &str = "Para abrir los comprimidos con doble clic: clic derecho en uno → Abrir con → Elegir otra aplicación → Kibotós → Siempre. Windows no deja que un programa se ponga como predeterminado por su cuenta.";
     pub const INTEGRATE_PATH: &str = "Programa registrado (si lo mueves, vuelve a integrarlo):";
-    pub const UNINTEGRATE_DONE: &str = "Se ha quitado la integración de Kibotós con Windows; no queda nada suyo en el registro.";
+    pub const UNINTEGRATE_DONE: &str = "Se ha quitado la integración de Kibotós con Windows. Tu configuración se conserva.";
     pub const UNINTEGRATE_NOTE: &str = "Si lo habías elegido como programa predeterminado, Windows volverá a preguntar con qué abrir esos archivos.";
     pub const INTEGRATE_FAILED: &str = "No se pudo modificar el registro:";
+
+    // Installing and updating
+    pub const INSTALL_TITLE: &str = "Instalar Kibotós";
+    pub const INSTALL_MAIN: &str = "¿Instalar Kibotós en este equipo?";
+    pub const INSTALL_TEXT: &str = "Se copia a tu carpeta de programas, sin permisos de administrador. Aparece en el menú Inicio y en Configuración › Aplicaciones (desde donde se desinstala), y se añade al menú contextual del Explorador. Después puedes borrar este archivo.";
+    pub const INSTALL_BUTTON: &str = "&Instalar";
+    pub const UPDATE_INSTALLED_BUTTON: &str = "&Actualizar";
+    pub const UPDATE_INSTALLED_TEXT: &str = "Se reemplaza la versión instalada; la configuración y la integración se conservan. Después puedes borrar este archivo.";
+    pub const NEVER_ASK: &str = "No &volver a preguntar";
+    pub const CHECK_UPDATES_BOX: &str = "Avisarme cuando haya una versión nueva (consulta GitHub una vez al día)";
+    pub const INSTALL_FAILED: &str = "No se pudo instalar:";
+    pub const UNINSTALL_TITLE: &str = "Desinstalar Kibotós";
+    pub const UNINSTALL_MAIN: &str = "¿Desinstalar Kibotós?";
+    pub const UNINSTALL_TEXT: &str = "Se quitan el programa, su acceso en el menú Inicio, el menú contextual, la opción «Abrir con» y la configuración. Tus archivos comprimidos no se tocan.";
+    pub const UNINSTALL_BUTTON: &str = "&Desinstalar";
+    pub const UNINSTALLED: &str = "Kibotós se desinstaló.";
+    pub const UNINSTALL_FAILED: &str = "No se pudo desinstalar:";
+    pub const NEW_VERSION_TITLE: &str = "Versión nueva de Kibotós";
+    pub const NEW_VERSION_BUTTON: &str = "&Ver la versión nueva";
+    pub const SKIP_VERSION_BUTTON: &str = "&Omitir esta versión";
+    pub const PROGRESS_CHECKING: &str = "Buscando actualizaciones";
+    pub const CHECK_NOT_FOUND: &str = "GitHub no muestra versiones publicadas de Kibotós (si el repositorio es privado, no se pueden consultar).";
+    pub const CHECK_FAILED: &str = "No se pudo consultar GitHub:";
 
     // Context menu of the list
     pub const CTX_OPEN: &str = "&Abrir\tEnter";
@@ -369,6 +395,30 @@ pub fn integrated(exe: &str) -> String {
 
 pub fn unintegrated() -> String {
     format!("{}\n\n{}", t::UNINTEGRATE_DONE, t::UNINTEGRATE_NOTE)
+}
+
+pub fn update_installed_main(installed: &str) -> String {
+    format!("¿Actualizar Kibotós {installed} a {}?", env!("CARGO_PKG_VERSION"))
+}
+
+pub fn installed_done(dir: &str) -> String {
+    format!(
+        "Kibotós {} está instalado en:\n{dir}\n\n•  Ábrelo desde el menú Inicio, o con clic derecho en un comprimido → «Kibotós» (en Windows 11, dentro de «Mostrar más opciones»).\n\n•  {}\n\nYa puedes borrar el archivo que descargaste.",
+        env!("CARGO_PKG_VERSION"),
+        t::INTEGRATE_DEFAULT
+    )
+}
+
+pub fn new_version_main(tag: &str) -> String {
+    format!("Hay una versión nueva: {tag}")
+}
+
+pub fn new_version_text() -> String {
+    format!("Tienes la {}. En su página están las novedades y el archivo para descargar.", env!("CARGO_PKG_VERSION"))
+}
+
+pub fn up_to_date() -> String {
+    format!("Tienes la última versión ({}).", env!("CARGO_PKG_VERSION"))
 }
 
 pub fn conflict_question(name: &str) -> String {

@@ -11,6 +11,7 @@ mod file_types;
 mod format;
 mod fsview;
 mod icons;
+mod install;
 mod integrate;
 mod job;
 mod progress;
@@ -18,6 +19,7 @@ mod strings;
 mod task;
 mod temp;
 mod timing;
+mod update;
 mod window;
 
 use std::path::PathBuf;

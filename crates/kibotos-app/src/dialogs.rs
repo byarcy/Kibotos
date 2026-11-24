@@ -10,7 +10,7 @@ use windows::Win32::Graphics::Gdi::{CreateFontIndirectW, DeleteObject, HFONT, HG
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::{
-    TASKDIALOG_BUTTON, TASKDIALOGCONFIG, TASKDIALOGCONFIG_0, TD_INFORMATION_ICON, TDF_SIZE_TO_CONTENT, TD_WARNING_ICON,
+    TASKDIALOG_BUTTON, TASKDIALOGCONFIG, TASKDIALOGCONFIG_0, TD_INFORMATION_ICON, TDF_SIZE_TO_CONTENT, TDF_VERIFICATION_FLAG_CHECKED, TD_WARNING_ICON,
     TDF_ALLOW_DIALOG_CANCELLATION, TDF_POSITION_RELATIVE_TO_WINDOW, TaskDialogIndirect,
 };
 use windows::Win32::UI::HiDpi::{GetDpiForWindow, SystemParametersInfoForDpi};
@@ -304,22 +304,46 @@ pub fn ask_conflict(owner: HWND, target: &Path, new_size: Option<u64>, new_modif
 /// A question with custom (Spanish) buttons. Returns the chosen id, or
 /// `IDCANCEL` when the dialog is dismissed with Esc or the close button.
 pub fn choose(owner: HWND, title: &str, main: &str, content: &str, buttons: &[(i32, &str)]) -> i32 {
-    choose_with(owner, title, main, content, buttons, TD_WARNING_ICON, false)
+    choose_with(owner, title, main, content, buttons, TD_WARNING_ICON, false, None).0
 }
 
 /// Like [`choose`], with the information icon (a result, not a warning).
 pub fn choose_info(owner: HWND, title: &str, main: &str, content: &str, buttons: &[(i32, &str)]) -> i32 {
-    choose_with(owner, title, main, content, buttons, TD_INFORMATION_ICON, false)
+    choose_with(owner, title, main, content, buttons, TD_INFORMATION_ICON, false, None).0
 }
 
 /// Like [`choose_info`], as wide as its longest line (hashes must not be
 /// cut).
 pub fn choose_info_wide(owner: HWND, title: &str, main: &str, content: &str, buttons: &[(i32, &str)]) -> i32 {
-    choose_with(owner, title, main, content, buttons, TD_INFORMATION_ICON, true)
+    choose_with(owner, title, main, content, buttons, TD_INFORMATION_ICON, true, None).0
 }
 
-fn choose_with(owner: HWND, title: &str, main: &str, content: &str, buttons: &[(i32, &str)], icon: PCWSTR, wide_box: bool) -> i32 {
+/// Like [`choose_info`], with a checkbox under the buttons. Returns the
+/// button and whether the box was ticked.
+pub fn choose_check(owner: HWND, title: &str, main: &str, content: &str, buttons: &[(i32, &str)], check: &str, checked: bool) -> (i32, bool) {
+    choose_with(owner, title, main, content, buttons, TD_INFORMATION_ICON, false, Some((check, checked)))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn choose_with(
+    owner: HWND,
+    title: &str,
+    main: &str,
+    content: &str,
+    buttons: &[(i32, &str)],
+    icon: PCWSTR,
+    wide_box: bool,
+    check: Option<(&str, bool)>,
+) -> (i32, bool) {
     let title = wide(title);
+    let check_text = check.map(|(text, _)| wide(text));
+    let mut flags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW;
+    if wide_box {
+        flags |= TDF_SIZE_TO_CONTENT;
+    }
+    if check.is_some_and(|(_, on)| on) {
+        flags |= TDF_VERIFICATION_FLAG_CHECKED;
+    }
     let main = wide(main);
     let body = wide(content);
     let texts: Vec<Vec<u16>> = buttons.iter().map(|(_, t)| wide(t)).collect();
@@ -331,7 +355,7 @@ fn choose_with(owner: HWND, title: &str, main: &str, content: &str, buttons: &[(
     let cfg = TASKDIALOGCONFIG {
         cbSize: std::mem::size_of::<TASKDIALOGCONFIG>() as u32,
         hwndParent: owner,
-        dwFlags: TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW | if wide_box { TDF_SIZE_TO_CONTENT } else { Default::default() },
+        dwFlags: flags,
         pszWindowTitle: PCWSTR(title.as_ptr()),
         Anonymous1: TASKDIALOGCONFIG_0 { pszMainIcon: icon },
         pszMainInstruction: PCWSTR(main.as_ptr()),
@@ -339,13 +363,15 @@ fn choose_with(owner: HWND, title: &str, main: &str, content: &str, buttons: &[(
         cButtons: specs.len() as u32,
         pButtons: specs.as_ptr(),
         nDefaultButton: buttons.first().map_or(0, |b| b.0),
+        pszVerificationText: check_text.as_ref().map_or(PCWSTR::null(), |t| PCWSTR(t.as_ptr())),
         ..Default::default()
     };
     let mut chosen = IDCANCEL_;
-    if unsafe { TaskDialogIndirect(&cfg, Some(&mut chosen), None, None) }.is_err() {
-        return IDCANCEL_;
+    let mut ticked = windows::core::BOOL(0);
+    if unsafe { TaskDialogIndirect(&cfg, Some(&mut chosen), None, Some(&mut ticked)) }.is_err() {
+        return (IDCANCEL_, false);
     }
-    chosen
+    (chosen, ticked.as_bool())
 }
 
 // ----------------------------------------------------------- reports

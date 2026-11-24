@@ -153,6 +153,55 @@ pub fn integration(owner: HWND, install: bool) -> i32 {
     }
 }
 
+/// `--install`: installs this .exe for the current user.
+fn install_cmd() -> i32 {
+    init_ui();
+    match crate::install::install() {
+        Ok(exe) => {
+            let dir = exe.parent().map(|d| d.display().to_string()).unwrap_or_default();
+            dialogs::message(HWND::default(), t::INSTALL_TITLE, &strings::installed_done(&dir), MB_ICONINFORMATION);
+            OK
+        }
+        Err(e) => {
+            dialogs::message(HWND::default(), t::INSTALL_TITLE, &format!("{} {e}", t::INSTALL_FAILED), MB_ICONERROR);
+            FAILED
+        }
+    }
+}
+
+/// `--uninstall` (Configuración › Aplicaciones › Desinstalar). `--quiet`
+/// asks nothing and shows nothing.
+fn uninstall_cmd(quiet: bool) -> i32 {
+    init_ui();
+    if !quiet {
+        const GO: i32 = 100;
+        let choice = dialogs::choose(
+            HWND::default(),
+            t::UNINSTALL_TITLE,
+            t::UNINSTALL_MAIN,
+            t::UNINSTALL_TEXT,
+            &[(GO, t::UNINSTALL_BUTTON), (IDCANCEL.0, t::CANCEL)],
+        );
+        if choice != GO {
+            return CANCELLED;
+        }
+    }
+    match crate::install::uninstall() {
+        Ok(()) => {
+            if !quiet {
+                dialogs::message(HWND::default(), t::UNINSTALL_TITLE, t::UNINSTALLED, MB_ICONINFORMATION);
+            }
+            OK
+        }
+        Err(e) => {
+            if !quiet {
+                dialogs::message(HWND::default(), t::UNINSTALL_TITLE, &format!("{} {e}", t::UNINSTALL_FAILED), MB_ICONERROR);
+            }
+            FAILED
+        }
+    }
+}
+
 fn init_ui() {
     unsafe {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
@@ -204,6 +253,8 @@ pub fn run(args: &[OsString]) -> i32 {
     match args.first().and_then(|a| a.to_str()) {
         Some("--integrate") => return integration(HWND::default(), true),
         Some("--unintegrate") => return integration(HWND::default(), false),
+        Some("--install") => return install_cmd(),
+        Some("--uninstall") => return uninstall_cmd(args.iter().any(|a| a == "--quiet")),
         Some(flag) if flag.starts_with("--compress-") => return compress_cmd(&flag["--compress-".len()..], &args[1..]),
         _ => {}
     }

@@ -32,7 +32,7 @@ fn main() {
 
     // These DLLs are only needed after the window is visible (icons,
     // dialogs, COM). Delay-loading them shortens process start.
-    for dll in ["shell32.dll", "comdlg32.dll", "ole32.dll", "oleaut32.dll", "imm32.dll", "combase.dll"] {
+    for dll in ["shell32.dll", "comdlg32.dll", "ole32.dll", "oleaut32.dll", "imm32.dll", "combase.dll", "winhttp.dll"] {
         println!("cargo:rustc-link-arg-bins=/DELAYLOAD:{dll}");
     }
     println!("cargo:rustc-link-arg-bins=delayimp.lib");

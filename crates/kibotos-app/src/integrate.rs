@@ -16,7 +16,7 @@ use std::path::Path;
 
 use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, WIN32_ERROR};
 use windows::Win32::System::Registry::{
-    HKEY, HKEY_CURRENT_USER, KEY_READ, KEY_WRITE, REG_NONE, REG_OPTION_NON_VOLATILE, REG_SZ, REG_VALUE_TYPE,
+    HKEY, HKEY_CURRENT_USER, KEY_READ, KEY_WRITE, REG_DWORD, REG_NONE, REG_OPTION_NON_VOLATILE, REG_SZ, REG_VALUE_TYPE,
     RegCloseKey, RegCreateKeyExW, RegDeleteKeyW, RegDeleteTreeW, RegDeleteValueW, RegOpenKeyExW, RegQueryInfoKeyW,
     RegQueryValueExW, RegSetValueExW,
 };
@@ -48,7 +48,7 @@ fn check(e: WIN32_ERROR) -> io::Result<()> {
 }
 
 /// An open registry key under HKEY_CURRENT_USER.
-struct Key(HKEY);
+pub(crate) struct Key(HKEY);
 
 impl Drop for Key {
     fn drop(&mut self) {
@@ -59,7 +59,7 @@ impl Drop for Key {
 }
 
 impl Key {
-    fn create(path: &str) -> io::Result<Key> {
+    pub(crate) fn create(path: &str) -> io::Result<Key> {
         let mut h = HKEY::default();
         check(unsafe {
             RegCreateKeyExW(
@@ -77,7 +77,7 @@ impl Key {
         Ok(Key(h))
     }
 
-    fn open(path: &str) -> Option<Key> {
+    pub(crate) fn open(path: &str) -> Option<Key> {
         let mut h = HKEY::default();
         let e = unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, &HSTRING::from(path), None, KEY_READ, &mut h) };
         (e.0 == 0).then_some(Key(h))
@@ -87,13 +87,17 @@ impl Key {
         check(unsafe { RegSetValueExW(self.0, &HSTRING::from(name), None, kind, Some(data)) })
     }
 
+    pub(crate) fn set_dword(&self, name: &str, value: u32) -> io::Result<()> {
+        self.set_raw(name, REG_DWORD, &value.to_le_bytes())
+    }
+
     /// A string value; `""` is the key's default value.
-    fn set(&self, name: &str, value: &str) -> io::Result<()> {
+    pub(crate) fn set(&self, name: &str, value: &str) -> io::Result<()> {
         let bytes: Vec<u8> = value.encode_utf16().chain(std::iter::once(0)).flat_map(u16::to_le_bytes).collect();
         self.set_raw(name, REG_SZ, &bytes)
     }
 
-    fn get(&self, name: &str) -> Option<String> {
+    pub(crate) fn get(&self, name: &str) -> Option<String> {
         let mut len = 0u32;
         let name = HSTRING::from(name);
         unsafe {
@@ -129,6 +133,11 @@ impl Key {
         };
         ok.0 == 0 && subkeys == 0 && values == 0
     }
+}
+
+/// Deletes a key under HKEY_CURRENT_USER with everything in it.
+pub(crate) fn delete_key(path: &str) -> io::Result<()> {
+    delete_tree(path)
 }
 
 fn delete_tree(path: &str) -> io::Result<()> {
@@ -297,7 +306,12 @@ fn remove_at(l: &Layout) -> io::Result<()> {
         remove_if_empty(&format!(r"{classes}\SystemFileAssociations\{dot}"));
     }
     delete_value(&format!(r"{}\RegisteredApplications", l.software), APP)?;
-    delete_tree(&l.app())?;
+    // The app key also holds the user's settings: only what integration
+    // wrote goes.
+    delete_tree(&l.capabilities())?;
+    delete_value(&l.app(), "Exe")?;
+    delete_value(&l.app(), "ExeName")?;
+    remove_if_empty(&l.app());
     Ok(())
 }
 
@@ -309,18 +323,30 @@ fn notify_shell() {
 /// "Integrar con Windows" for the running .exe.
 pub fn install() -> io::Result<std::path::PathBuf> {
     let exe = std::env::current_exe()?;
-    // A previous integration may point to another copy or name.
-    remove_at(&Layout { software: "Software".into() })?;
-    install_at(&Layout { software: "Software".into() }, &exe)?;
-    notify_shell();
+    install_exe(&exe)?;
     Ok(exe)
 }
 
-/// "Quitar integración".
+/// Integrates `exe` (the installed copy, or the running one).
+pub fn install_exe(exe: &Path) -> io::Result<()> {
+    // A previous integration may point to another copy or name.
+    remove_at(&Layout { software: "Software".into() })?;
+    install_at(&Layout { software: "Software".into() }, exe)?;
+    notify_shell();
+    Ok(())
+}
+
+/// "Quitar integración". Settings are kept.
 pub fn remove() -> io::Result<()> {
     remove_at(&Layout { software: "Software".into() })?;
     notify_shell();
     Ok(())
+}
+
+/// Uninstalling: the integration and the settings.
+pub fn remove_all() -> io::Result<()> {
+    remove()?;
+    delete_tree(&format!(r"Software\{APP}"))
 }
 
 /// Whether Kibotós is currently integrated, and with which .exe.
@@ -397,6 +423,14 @@ mod tests {
         let found = unsafe { RegQueryValueExW(other.0, &HSTRING::from("Otro.Zip"), None, Some(&mut kind), None, None) };
         assert_eq!(found.0, 0, "other program's value kept");
         drop(other);
+
+        // Removing the integration keeps the user's settings.
+        install_at(&l, exe).unwrap();
+        Key::create(&format!(r"{}\Settings", l.app())).unwrap().set("CompressFormat", "7z").unwrap();
+        remove_at(&l).unwrap();
+        assert_eq!(get(&format!(r"{}\Settings", l.app()), "CompressFormat").as_deref(), Some("7z"));
+        assert!(get(&l.app(), "Exe").is_none(), "integration values removed");
+        assert!(Key::open(&l.capabilities()).is_none());
         delete_tree(&scratch).unwrap();
     }
 }

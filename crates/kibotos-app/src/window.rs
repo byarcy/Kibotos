@@ -61,8 +61,13 @@ const WM_APP_RENAME: u32 = WM_APP + 6;
 /// The window came to the front: look for edited files to save back.
 const WM_APP_CHECK_EDITED: u32 = WM_APP + 7;
 
+/// A newer release was found (posted by the daily check).
+const WM_APP_UPDATE: u32 = WM_APP + 8;
+
 #[path = "window_edit.rs"]
 mod edit;
+#[path = "window_setup.rs"]
+mod setup;
 
 const ID_OPEN: u16 = 101;
 const ID_EXIT: u16 = 102;
@@ -74,8 +79,11 @@ const ID_REFRESH: u16 = 107;
 const ID_COMPRESS: u16 = 108;
 const ID_NEW_FOLDER: u16 = 109;
 const ID_ABOUT: u16 = 201;
+const ID_CHECK_UPDATES: u16 = 202;
+const ID_AUTO_UPDATES: u16 = 203;
 const ID_INTEGRATE: u16 = 301;
 const ID_UNINTEGRATE: u16 = 302;
+const ID_INSTALL: u16 = 303;
 const CM_OPEN: u32 = 401;
 const CM_OPEN_WITH: u32 = 402;
 const CM_EXTRACT: u32 = 403;
@@ -102,6 +110,9 @@ const DROP_WAIT_MS: u32 = 60_000;
 /// Tells Explorer about new files while an extraction to a folder runs.
 const TIMER_SHELL: usize = 2;
 const SHELL_REFRESH_MS: u32 = 500;
+/// Install offer and update check, once the window is up.
+const TIMER_STARTUP: usize = 3;
+const STARTUP_DELAY_MS: u32 = 700;
 const ID_FILTER: usize = 1001;
 
 const SEL_FOCUS: LIST_VIEW_ITEM_STATE_FLAGS = LIST_VIEW_ITEM_STATE_FLAGS(LVIS_SELECTED.0 | LVIS_FOCUSED.0);
@@ -297,6 +308,7 @@ pub fn run(archive: Option<PathBuf>) {
 
         let _ = ShowWindow(hwnd, SW_SHOWDEFAULT);
         let _ = UpdateWindow(hwnd);
+        SetTimer(Some(hwnd), TIMER_STARTUP, STARTUP_DELAY_MS, None);
         std::thread::spawn(temp::clean_stale);
 
         let accel = CreateAcceleratorTableW(&[
@@ -340,7 +352,12 @@ unsafe fn build_menu() -> HMENU {
         let tools = CreatePopupMenu().unwrap_or_default();
         let _ = AppendMenuW(tools, MF_STRING, ID_INTEGRATE as usize, &HSTRING::from(t::MENU_INTEGRATE));
         let _ = AppendMenuW(tools, MF_STRING, ID_UNINTEGRATE as usize, &HSTRING::from(t::MENU_UNINTEGRATE));
+        let _ = AppendMenuW(tools, MF_SEPARATOR, 0, PCWSTR::null());
+        let _ = AppendMenuW(tools, MF_STRING, ID_INSTALL as usize, &HSTRING::from(t::MENU_INSTALL));
         let help = CreatePopupMenu().unwrap_or_default();
+        let _ = AppendMenuW(help, MF_STRING, ID_CHECK_UPDATES as usize, &HSTRING::from(t::MENU_CHECK_UPDATES));
+        let _ = AppendMenuW(help, MF_STRING, ID_AUTO_UPDATES as usize, &HSTRING::from(t::MENU_AUTO_UPDATES));
+        let _ = AppendMenuW(help, MF_SEPARATOR, 0, PCWSTR::null());
         let _ = AppendMenuW(help, MF_STRING, ID_ABOUT as usize, &HSTRING::from(t::MENU_ABOUT));
         let _ = AppendMenuW(bar, MF_POPUP, file.0 as usize, &HSTRING::from(t::MENU_FILE));
         let _ = AppendMenuW(bar, MF_POPUP, tools.0 as usize, &HSTRING::from(t::MENU_TOOLS));
@@ -584,6 +601,16 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 }
                 LRESULT(0)
             }
+            WM_TIMER if wp.0 == TIMER_STARTUP => {
+                let _ = KillTimer(Some(hwnd), TIMER_STARTUP);
+                setup::startup_checks(hwnd);
+                LRESULT(0)
+            }
+            WM_APP_UPDATE => {
+                let tag = *Box::from_raw(lp.0 as *mut String);
+                setup::show_new_version(hwnd, &tag);
+                LRESULT(0)
+            }
             WM_TIMER if wp.0 == TIMER_DROP => {
                 let _ = KillTimer(Some(hwnd), TIMER_DROP);
                 // The drop never reached a folder (e.g. the recycle bin).
@@ -641,6 +668,11 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 let enable = if integrated { MF_ENABLED } else { MF_GRAYED };
                 CheckMenuItem(menu, ID_INTEGRATE as u32, (MF_BYCOMMAND | check).0);
                 let _ = EnableMenuItem(menu, ID_UNINTEGRATE as u32, MF_BYCOMMAND | enable);
+                // The installed copy has nothing to install.
+                let installed = crate::install::is_installed_copy();
+                let _ = EnableMenuItem(menu, ID_INSTALL as u32, MF_BYCOMMAND | if installed { MF_GRAYED } else { MF_ENABLED });
+                let auto = if crate::update::enabled() { MF_CHECKED } else { MF_UNCHECKED };
+                CheckMenuItem(menu, ID_AUTO_UPDATES as u32, (MF_BYCOMMAND | auto).0);
                 LRESULT(0)
             }
             WM_DESTROY => {
@@ -682,6 +714,9 @@ unsafe fn on_command(hwnd: HWND, id: u16) {
             ID_UP => go_up(),
             ID_PATHBAR => focus_path_bar(),
             ID_REFRESH => reload(hwnd),
+            ID_INSTALL => setup::offer_install(hwnd, None),
+            ID_CHECK_UPDATES => setup::manual_check(hwnd),
+            ID_AUTO_UPDATES => crate::update::set_enabled(!crate::update::enabled()),
             ID_ABOUT => {
                 MessageBoxW(
                     Some(hwnd),
