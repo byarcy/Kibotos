@@ -34,11 +34,11 @@ use windows::Win32::UI::Controls::Dialogs::{
 use windows::Win32::UI::Controls::*;
 use windows::Win32::UI::HiDpi::{GetDpiForSystem, GetDpiForWindow, SystemParametersInfoForDpi};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetFocus, GetKeyState, SetFocus, VK_BACK, VK_CONTROL, VK_DOWN, VK_ESCAPE, VK_F5, VK_MENU, VK_NEXT, VK_PRIOR,
-    VK_RETURN, VK_UP,
+    GetFocus, GetKeyState, SetFocus, VK_BACK, VK_CONTROL, VK_DELETE, VK_DOWN, VK_ESCAPE, VK_F2, VK_F5, VK_MENU, VK_NEXT,
+    VK_PRIOR, VK_RETURN, VK_UP,
 };
 use windows::Win32::UI::Shell::{
-    DefSubclassProc, DragFinish, OAIF_EXEC, OPENASINFO, SHOpenWithDialog, DragQueryFileW, HDROP, SEE_MASK_INVOKEIDLIST, SHELLEXECUTEINFOW, SetWindowSubclass,
+    DefSubclassProc, DragFinish, DragQueryPoint, OAIF_EXEC, OPENASINFO, SHOpenWithDialog, DragQueryFileW, HDROP, SEE_MASK_INVOKEIDLIST, SHELLEXECUTEINFOW, SetWindowSubclass,
     ShellExecuteExW,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
@@ -56,6 +56,13 @@ use crate::{format, timing, wide};
 
 const WM_APP_LOADED: u32 = WM_APP + 1;
 const WM_APP_ICONS: u32 = WM_APP + 2;
+/// A name typed in the list (posted from LVN_ENDLABELEDIT).
+const WM_APP_RENAME: u32 = WM_APP + 6;
+/// The window came to the front: look for edited files to save back.
+const WM_APP_CHECK_EDITED: u32 = WM_APP + 7;
+
+#[path = "window_edit.rs"]
+mod edit;
 
 const ID_OPEN: u16 = 101;
 const ID_EXIT: u16 = 102;
@@ -65,6 +72,7 @@ const ID_EXTRACT: u16 = 105;
 const ID_PATHBAR: u16 = 106;
 const ID_REFRESH: u16 = 107;
 const ID_COMPRESS: u16 = 108;
+const ID_NEW_FOLDER: u16 = 109;
 const ID_ABOUT: u16 = 201;
 const ID_INTEGRATE: u16 = 301;
 const ID_UNINTEGRATE: u16 = 302;
@@ -82,6 +90,10 @@ const CM_REFRESH: u32 = 411;
 const CM_COMPRESS_ZIP: u32 = 412;
 const CM_COMPRESS_7Z: u32 = 413;
 const CM_COMPRESS_DIALOG: u32 = 414;
+const CM_SHA256: u32 = 415;
+const CM_RENAME: u32 = 416;
+const CM_DELETE: u32 = 417;
+const CM_NEW_FOLDER: u32 = 418;
 const ID_LIST: usize = 1000;
 
 /// Gives up waiting for the shell to copy the drag marker.
@@ -98,12 +110,14 @@ const SEL_FOCUS: LIST_VIEW_ITEM_STATE_FLAGS = LIST_VIEW_ITEM_STATE_FLAGS(LVIS_SE
 const UP: NodeId = NodeId::MAX;
 
 /// Column titles, base widths at 96 DPI, right-aligned, sort key.
-const COLUMNS: [(&str, i32, bool, SortKey); 4] = [
+const COLUMNS: [(&str, i32, bool, SortKey); 5] = [
     (t::COL_NAME, 420, false, SortKey::Name),
     (t::COL_SIZE, 110, true, SortKey::Size),
     (t::COL_PACKED, 110, true, SortKey::Packed),
     (t::COL_MODIFIED, 140, false, SortKey::Modified),
+    (t::COL_CRC, 90, false, SortKey::Crc),
 ];
+const COL_CRC: usize = 4;
 
 struct Loaded {
     path: PathBuf,
@@ -179,6 +193,10 @@ struct App {
     /// program), and its result.
     blocking: bool,
     blocking_done: Option<ExtractDone>,
+    /// After an archive was changed: what to select once it is open again.
+    after_load: Option<edit::AfterLoad>,
+    /// Status text to show once the changed archive is open again.
+    status_note: Option<String>,
 }
 
 /// The entries a command acts on.
@@ -286,6 +304,7 @@ pub fn run(archive: Option<PathBuf>) {
             ACCEL { fVirt: FCONTROL | FVIRTKEY, key: b'F' as u16, cmd: ID_FIND },
             ACCEL { fVirt: FCONTROL | FVIRTKEY, key: b'E' as u16, cmd: ID_EXTRACT },
             ACCEL { fVirt: FCONTROL | FVIRTKEY, key: b'N' as u16, cmd: ID_COMPRESS },
+            ACCEL { fVirt: FCONTROL | FSHIFT | FVIRTKEY, key: b'N' as u16, cmd: ID_NEW_FOLDER },
             ACCEL { fVirt: FALT | FVIRTKEY, key: VK_UP.0, cmd: ID_UP },
             ACCEL { fVirt: FCONTROL | FVIRTKEY, key: b'L' as u16, cmd: ID_PATHBAR },
             ACCEL { fVirt: FALT | FVIRTKEY, key: b'D' as u16, cmd: ID_PATHBAR },
@@ -370,7 +389,7 @@ unsafe fn on_create(hwnd: HWND) {
         let list = child(
             hwnd,
             WC_LISTVIEWW,
-            WS_TABSTOP | WINDOW_STYLE(LVS_REPORT | LVS_OWNERDATA | LVS_SHOWSELALWAYS | LVS_SHAREIMAGELISTS),
+            WS_TABSTOP | WINDOW_STYLE(LVS_REPORT | LVS_OWNERDATA | LVS_SHOWSELALWAYS | LVS_SHAREIMAGELISTS | LVS_EDITLABELS),
             WINDOW_EX_STYLE(0),
             ID_LIST,
         );
@@ -440,8 +459,11 @@ unsafe fn apply_dpi(hwnd: HWND, dpi: u32) {
         if !old.is_invalid() {
             let _ = DeleteObject(HGDIOBJ(old.0));
         }
+        let disk = with_app(|a| a.fs.is_some());
         for (i, (_, width, _, _)) in COLUMNS.iter().enumerate() {
-            send(handles[0], LVM_SETCOLUMNWIDTH, i, scale(*width, dpi) as isize);
+            // Files on disk have no stored CRC: that column is hidden there.
+            let w = if disk && i == COL_CRC { 0 } else { scale(*width, dpi) };
+            send(handles[0], LVM_SETCOLUMNWIDTH, i, w as isize);
         }
         layout(hwnd);
     }
@@ -503,7 +525,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 }
                 r
             }
-            WM_NOTIFY => on_notify(lp),
+            WM_NOTIFY => on_notify(hwnd, lp),
             WM_COMMAND => {
                 let id = (wp.0 & 0xFFFF) as u16;
                 let code = ((wp.0 >> 16) & 0xFFFF) as u32;
@@ -521,6 +543,22 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             WM_APP_LOADED => {
                 on_loaded(hwnd, lp);
                 LRESULT(0)
+            }
+            WM_APP_RENAME => {
+                let (node, text) = *Box::from_raw(lp.0 as *mut (NodeId, String));
+                edit::finish_rename(hwnd, node, text);
+                LRESULT(0)
+            }
+            WM_APP_CHECK_EDITED => {
+                edit::check_edited(hwnd);
+                LRESULT(0)
+            }
+            WM_ACTIVATEAPP => {
+                if wp.0 != 0 {
+                    // Asked after activation settles, not inside it.
+                    let _ = PostMessageW(Some(hwnd), WM_APP_CHECK_EDITED, WPARAM(0), LPARAM(0));
+                }
+                DefWindowProcW(hwnd, msg, wp, lp)
             }
             WM_APP_EXTRACTED => {
                 on_extracted(hwnd, lp);
@@ -626,6 +664,7 @@ unsafe fn on_command(hwnd: HWND, id: u16) {
                 let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
             }
             ID_FIND => focus_filter(),
+            ID_NEW_FOLDER => edit::new_folder(hwnd),
             ID_EXTRACT => on_extract(hwnd),
             ID_COMPRESS => {
                 // Disk view only: archives are not edited (yet).
@@ -656,10 +695,28 @@ unsafe fn on_command(hwnd: HWND, id: u16) {
     }
 }
 
-unsafe fn on_notify(lp: LPARAM) -> LRESULT {
+unsafe fn on_notify(hwnd: HWND, lp: LPARAM) -> LRESULT {
     unsafe {
         let hdr = &*(lp.0 as *const NMHDR);
         match hdr.code {
+            // Nonzero cancels the edit.
+            LVN_BEGINLABELEDITW => {
+                let row = (*(lp.0 as *const NMLVDISPINFOW)).item.iItem;
+                return LRESULT(isize::from(row < 0 || !edit::allow_label_edit(row as usize)));
+            }
+            LVN_ENDLABELEDITW => {
+                let item = &(*(lp.0 as *const NMLVDISPINFOW)).item;
+                let node = with_app(|a| usize::try_from(item.iItem).ok().and_then(|r| a.rows.get(r).copied()));
+                if let (Some(node), false) = (node, item.pszText.is_null()) {
+                    let text = item.pszText.to_string().unwrap_or_default();
+                    let boxed = Box::into_raw(Box::new((node, text)));
+                    if PostMessageW(Some(hwnd), WM_APP_RENAME, WPARAM(0), LPARAM(boxed as isize)).is_err() {
+                        drop(Box::from_raw(boxed));
+                    }
+                }
+                // The list shows names from the archive: keep its text.
+                return LRESULT(0);
+            }
             LVN_GETDISPINFOW => fill_row(&mut *(lp.0 as *mut NMLVDISPINFOW)),
             NM_DBLCLK => {
                 let item = (*(lp.0 as *const NMITEMACTIVATE)).iItem;
@@ -733,6 +790,14 @@ unsafe extern "system" fn list_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
                 }
                 if vk == VK_ESCAPE.0 {
                     clear_filter();
+                    return LRESULT(0);
+                }
+                if vk == VK_DELETE.0 && with_app(|a| a.archive.is_some() && a.fs.is_none()) {
+                    edit::delete_selected(GetParent(hwnd).unwrap_or_default());
+                    return LRESULT(0);
+                }
+                if vk == VK_F2.0 && with_app(|a| a.archive.is_some() && a.fs.is_none()) {
+                    edit::begin_rename(GetParent(hwnd).unwrap_or_default());
                     return LRESULT(0);
                 }
                 if vk == b'A' as u16 && ctrl_down() {
@@ -824,13 +889,27 @@ unsafe fn open_dialog(hwnd: HWND) -> Option<PathBuf> {
     }
 }
 
+/// Files dropped on the window: added to the open archive (after asking),
+/// otherwise the first one is opened.
 unsafe fn on_drop(hwnd: HWND, drop: HDROP) {
     unsafe {
+        let count = DragQueryFileW(drop, u32::MAX, None);
+        let mut paths = Vec::with_capacity(count as usize);
         let mut buf = vec![0u16; 32 * 1024];
-        let n = DragQueryFileW(drop, 0, Some(&mut buf)) as usize;
+        for i in 0..count {
+            let n = DragQueryFileW(drop, i, Some(&mut buf)) as usize;
+            if n > 0 {
+                paths.push(PathBuf::from(String::from_utf16_lossy(&buf[..n])));
+            }
+        }
+        let mut pt = POINT::default();
+        let _ = DragQueryPoint(drop, &mut pt);
         DragFinish(drop);
-        if n > 0 {
-            start_load(hwnd, PathBuf::from(String::from_utf16_lossy(&buf[..n])), None);
+        let Some(first) = paths.first().cloned() else { return };
+        // Let the drag source finish before a dialog appears.
+        let _ = SetForegroundWindow(hwnd);
+        if !edit::drop_into_archive(hwnd, paths, pt) {
+            start_load(hwnd, first, None);
         }
     }
 }
@@ -1074,6 +1153,8 @@ unsafe fn on_loaded(hwnd: HWND, lp: LPARAM) {
             let _ = SetFocus(Some(list));
         }
         let _ = UpdateWindow(list);
+        // Last: it may start editing a name, which focus changes would end.
+        edit::after_loaded();
     }
 }
 
@@ -1102,6 +1183,8 @@ fn set_mode(archive: bool) {
         ..Default::default()
     };
     send(list, LVM_SETCOLUMNW, 2, &col as *const _ as isize);
+    let crc_width = if archive { scale(COLUMNS[COL_CRC].1, dpi) } else { 0 };
+    send(list, LVM_SETCOLUMNWIDTH, COL_CRC, crc_width as isize);
     let cue = wide(if archive { t::FILTER_CUE } else { t::FILTER_CUE_FOLDER });
     send(filter, EM_SETCUEBANNER, 1, cue.as_ptr() as isize);
 }
@@ -1583,8 +1666,17 @@ fn on_context_menu(hwnd: HWND, lp: LPARAM) {
                 add(CM_LOCATE, t::CTX_LOCATE, true);
             }
             add(CM_COPY_PATH, t::CTX_COPY_PATH, true);
+            add(CM_SHA256, t::CTX_SHA256, !busy);
             add(CM_PROPERTIES, t::CTX_PROPERTIES, true);
         }
+        // Changes: shown always, disabled when the archive cannot change.
+        let can_edit = edit::editable(hwnd, false);
+        sep();
+        if count > 0 {
+            add(CM_RENAME, t::CTX_RENAME, can_edit && single.is_some() && !filtering);
+            add(CM_DELETE, t::CTX_DELETE, can_edit);
+        }
+        add(CM_NEW_FOLDER, t::CTX_NEW_FOLDER, can_edit && !filtering);
         let cmd = track_menu(menu, hwnd, pt);
         let _ = DestroyMenu(menu);
         match cmd {
@@ -1612,6 +1704,10 @@ fn on_context_menu(hwnd: HWND, lp: LPARAM) {
             }
             CM_COPY_PATH => copy_paths(hwnd),
             CM_PROPERTIES => show_properties(hwnd),
+            CM_SHA256 => edit::sha256_selected(hwnd),
+            CM_RENAME => edit::begin_rename(hwnd),
+            CM_DELETE => edit::delete_selected(hwnd),
+            CM_NEW_FOLDER => edit::new_folder(hwnd),
             _ => {}
         }
     }
@@ -2003,23 +2099,41 @@ fn confirm_close(hwnd: HWND) -> bool {
     if running {
         return false;
     }
-    let modified = temp::modified();
+    let mut modified = temp::modified();
     if modified.is_empty() {
         return true;
     }
     const SAVE: i32 = 100;
     const DISCARD: i32 = 101;
-    let mut content = format!("{}\n", t::MODIFIED_TEXT);
+    const UPDATE: i32 = 102;
+    // Files from the open archive can be saved into it.
+    let current = with_app(|a| a.archive.as_ref().map(|l| l.path.clone()));
+    let ours = current.as_deref().map(temp::changed_from).unwrap_or_default();
+    let can_update = !ours.is_empty() && edit::editable(hwnd, false);
+    let intro = match &current {
+        Some(path) if can_update => strings::edited_text(&file_name(path)),
+        _ => t::MODIFIED_TEXT.to_owned(),
+    };
+    let mut content = format!("{intro}\n");
     for (f, _) in &modified {
         content.push_str(&format!("\n•  {}", file_name(f)));
     }
-    let choice = dialogs::choose(
-        hwnd,
-        t::MODIFIED_TITLE,
-        t::MODIFIED_MAIN,
-        &content,
-        &[(SAVE, t::SAVE_COPIES), (DISCARD, t::DISCARD), (IDCANCEL.0, t::CANCEL)],
-    );
+    let mut buttons = vec![(SAVE, t::SAVE_COPIES), (DISCARD, t::DISCARD), (IDCANCEL.0, t::CANCEL)];
+    if can_update {
+        buttons.insert(0, (UPDATE, t::UPDATE_ARCHIVE_BUTTON));
+    }
+    let mut choice = dialogs::choose(hwnd, t::MODIFIED_TITLE, t::MODIFIED_MAIN, &content, &buttons);
+    if choice == UPDATE {
+        if !edit::save_edited(hwnd, &ours, false) {
+            return false;
+        }
+        // Files from other archives still get copies.
+        modified.retain(|(f, _)| !ours.iter().any(|(o, _)| o == f));
+        if modified.is_empty() {
+            return true;
+        }
+        choice = SAVE;
+    }
     match choice {
         SAVE => {
             let mut saved = Vec::new();
@@ -2105,7 +2219,14 @@ unsafe fn on_extracted(hwnd: HWND, lp: LPARAM) {
             let summary = with_app(|a| a.shown.2.clone());
             match &job.open_after {
                 Some(target) if report.files > 0 && target.is_file() => {
-                    temp::track(target, &job.archive);
+                    // Remember which entry it is, so saving it can update
+                    // the archive.
+                    let entry = with_app(|a| {
+                        let arc = a.archive.as_ref().filter(|l| l.path == job.archive)?;
+                        let id = *job.ids.as_ref()?.first()?;
+                        arc.reader.entries().get(id as usize).map(|e| e.path.to_string())
+                    });
+                    temp::track(target, &job.archive, &entry.unwrap_or_default());
                     set_status(&strings::opened(&file_name(target)), &summary);
                     shell_open(hwnd, target, job.open_with);
                 }
@@ -2521,6 +2642,7 @@ fn fill_row(di: &mut NMLVDISPINFOW) {
                 1 if !is_dir => format::size(entry.and_then(|e| e.size)),
                 2 if !is_dir => format::size(entry.and_then(|e| e.packed)),
                 3 => format::date(entry.and_then(|e| e.modified)),
+                4 if !is_dir => entry.and_then(|e| e.crc).map(|c| format!("{c:08X}")).unwrap_or_default(),
                 _ => String::new(),
             };
             copy_text(&text, di.item.pszText, di.item.cchTextMax);

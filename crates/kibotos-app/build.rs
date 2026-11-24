@@ -1,8 +1,12 @@
-// Embeds the application manifest and icon with the MSVC linker. The icon
-// resource (.res) is written here directly from assets/kibotos.ico, so no
-// resource compiler (rc.exe) is needed.
+// Embeds the application manifest and the icons with the MSVC linker: the
+// app icon (assets/kibotos.ico, id 1) and one document icon per archive
+// extension (assets/types/<ext>.ico, ids from src/file_types.rs). The
+// resource file (.res) is written here directly, so no resource compiler
+// (rc.exe) is needed.
 
 use std::path::{Path, PathBuf};
+
+include!("src/file_types.rs");
 
 fn main() {
     let dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
@@ -10,6 +14,8 @@ fn main() {
     let icon = dir.join("assets").join("kibotos.ico");
     println!("cargo:rerun-if-changed=kibotos.manifest");
     println!("cargo:rerun-if-changed=assets/kibotos.ico");
+    println!("cargo:rerun-if-changed=assets/types");
+    println!("cargo:rerun-if-changed=src/file_types.rs");
     if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() != Ok("msvc") {
         return;
     }
@@ -17,7 +23,11 @@ fn main() {
     println!("cargo:rustc-link-arg-bins=/MANIFESTINPUT:{}", manifest.display());
 
     let res = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("kibotos.res");
-    write_icon_res(&icon, &res).expect("cannot build the icon resource");
+    let mut icons = vec![(ICON_GROUP_ID, icon)];
+    for (i, ext) in EXTENSIONS.iter().enumerate() {
+        icons.push((TYPE_ICON_BASE + i as u16, dir.join("assets").join("types").join(format!("{ext}.ico"))));
+    }
+    write_icon_res(&icons, &res).expect("cannot build the icon resource");
     println!("cargo:rustc-link-arg-bins={}", res.display());
 
     // These DLLs are only needed after the window is visible (icons,
@@ -33,31 +43,34 @@ const RT_GROUP_ICON: u16 = 14;
 /// Group icon id; `kibotos.exe,0` and `LoadIconW(.., 1)` refer to it.
 const ICON_GROUP_ID: u16 = 1;
 
-/// Writes a .res file with one RT_GROUP_ICON and an RT_ICON per image of
-/// the .ico (the images are copied as they are, PNG or BMP).
-fn write_icon_res(ico: &Path, out: &Path) -> std::io::Result<()> {
-    let data = std::fs::read(ico)?;
-    let u16_at = |o: usize| u16::from_le_bytes([data[o], data[o + 1]]);
-    let u32_at = |o: usize| u32::from_le_bytes([data[o], data[o + 1], data[o + 2], data[o + 3]]);
-    let count = u16_at(4) as usize;
-
+/// Writes a .res file with one RT_GROUP_ICON per .ico (with the given id)
+/// and an RT_ICON per image (copied as they are, PNG or BMP). RT_ICON ids
+/// are numbered across all groups.
+fn write_icon_res(icons: &[(u16, PathBuf)], out: &Path) -> std::io::Result<()> {
     let mut res = Vec::new();
     // A .res file starts with an empty entry.
     entry(&mut res, 0, 0, &[]);
-    let mut group = Vec::new();
-    group.extend_from_slice(&0u16.to_le_bytes()); // reserved
-    group.extend_from_slice(&1u16.to_le_bytes()); // type: icon
-    group.extend_from_slice(&(count as u16).to_le_bytes());
-    for i in 0..count {
-        let e = 6 + 16 * i;
-        let (size, offset) = (u32_at(e + 8) as usize, u32_at(e + 12) as usize);
-        let id = (i + 1) as u16;
-        entry(&mut res, RT_ICON, id, &data[offset..offset + size]);
-        // GRPICONDIRENTRY: the ICONDIRENTRY's first 12 bytes, then the id.
-        group.extend_from_slice(&data[e..e + 12]);
-        group.extend_from_slice(&id.to_le_bytes());
+    let mut next_id = 1u16;
+    for (group_id, ico) in icons {
+        let data = std::fs::read(ico)?;
+        let u16_at = |o: usize| u16::from_le_bytes([data[o], data[o + 1]]);
+        let u32_at = |o: usize| u32::from_le_bytes([data[o], data[o + 1], data[o + 2], data[o + 3]]);
+        let count = u16_at(4) as usize;
+        let mut group = Vec::new();
+        group.extend_from_slice(&0u16.to_le_bytes()); // reserved
+        group.extend_from_slice(&1u16.to_le_bytes()); // type: icon
+        group.extend_from_slice(&(count as u16).to_le_bytes());
+        for i in 0..count {
+            let e = 6 + 16 * i;
+            let (size, offset) = (u32_at(e + 8) as usize, u32_at(e + 12) as usize);
+            entry(&mut res, RT_ICON, next_id, &data[offset..offset + size]);
+            // GRPICONDIRENTRY: the ICONDIRENTRY's first 12 bytes, then the id.
+            group.extend_from_slice(&data[e..e + 12]);
+            group.extend_from_slice(&next_id.to_le_bytes());
+            next_id += 1;
+        }
+        entry(&mut res, RT_GROUP_ICON, *group_id, &group);
     }
-    entry(&mut res, RT_GROUP_ICON, ICON_GROUP_ID, &group);
     std::fs::write(out, res)
 }
 

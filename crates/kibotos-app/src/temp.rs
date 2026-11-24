@@ -18,9 +18,14 @@ use windows::Win32::System::Threading::{GetCurrentProcessId, GetProcessTimes, Op
 
 struct Opened {
     file: PathBuf,
-    /// Folder of the archive it came from (where copies are offered).
-    archive_dir: PathBuf,
+    /// The archive it came from, and its path there.
+    archive: PathBuf,
+    entry: String,
+    /// Modification time when it was extracted or last saved back.
     mtime: Option<SystemTime>,
+    /// The version the user chose not to save yet ("Ahora no"): not asked
+    /// about again, but still offered when Kibotós closes.
+    declined: Option<SystemTime>,
 }
 
 thread_local! {
@@ -65,25 +70,79 @@ pub fn new_slot() -> io::Result<PathBuf> {
     Ok(dir)
 }
 
-/// Remembers an extracted file so changes to it can be detected later.
-pub fn track(file: &Path, archive: &Path) {
-    let mtime = std::fs::metadata(file).and_then(|m| m.modified()).ok();
-    let archive_dir = archive.parent().map(Path::to_path_buf).unwrap_or_default();
-    OPENED.with(|o| o.borrow_mut().push(Opened { file: file.to_path_buf(), archive_dir, mtime }));
+fn mtime(file: &Path) -> Option<SystemTime> {
+    std::fs::metadata(file).and_then(|m| m.modified()).ok()
 }
 
-/// Opened files that were saved by the program that opened them.
+impl Opened {
+    fn changed(&self) -> bool {
+        let now = mtime(&self.file);
+        now.is_some() && now != self.mtime
+    }
+}
+
+/// Remembers an extracted file (`entry` of `archive`) so changes to it can
+/// be detected later.
+pub fn track(file: &Path, archive: &Path, entry: &str) {
+    let opened = Opened { file: file.to_path_buf(), archive: archive.to_path_buf(), entry: entry.to_owned(), mtime: mtime(file), declined: None };
+    OPENED.with(|o| o.borrow_mut().push(opened));
+}
+
+/// Opened files that were saved by the program that opened them, with the
+/// folder of their archive.
 pub fn modified() -> Vec<(PathBuf, PathBuf)> {
     OPENED.with(|o| {
         o.borrow()
             .iter()
-            .filter(|f| {
-                let now = std::fs::metadata(&f.file).and_then(|m| m.modified()).ok();
-                now.is_some() && now != f.mtime
-            })
-            .map(|f| (f.file.clone(), f.archive_dir.clone()))
+            .filter(|f| f.changed())
+            .map(|f| (f.file.clone(), f.archive.parent().map(Path::to_path_buf).unwrap_or_default()))
             .collect()
     })
+}
+
+/// Files opened from `archive` that changed since they were extracted or
+/// last saved back: (file, entry path in the archive).
+pub fn edited(archive: &Path) -> Vec<(PathBuf, String)> {
+    OPENED.with(|o| {
+        o.borrow()
+            .iter()
+            .filter(|f| f.archive == archive && f.changed() && mtime(&f.file) != f.declined)
+            .map(|f| (f.file.clone(), f.entry.clone()))
+            .collect()
+    })
+}
+
+/// Every file opened from `archive` that changed, including the ones the
+/// user chose not to save yet: (file, entry path in the archive).
+pub fn changed_from(archive: &Path) -> Vec<(PathBuf, String)> {
+    OPENED.with(|o| {
+        o.borrow()
+            .iter()
+            .filter(|f| f.archive == archive && f.changed())
+            .map(|f| (f.file.clone(), f.entry.clone()))
+            .collect()
+    })
+}
+
+/// Stops asking about the current version of `file`.
+pub fn decline(file: &Path) {
+    let now = mtime(file);
+    OPENED.with(|o| {
+        for f in o.borrow_mut().iter_mut().filter(|f| f.file == file) {
+            f.declined = now;
+        }
+    });
+}
+
+/// Takes the current version of `file` as the new baseline (it was saved
+/// into the archive, or the user chose not to).
+pub fn accept(file: &Path) {
+    let now = mtime(file);
+    OPENED.with(|o| {
+        for f in o.borrow_mut().iter_mut().filter(|f| f.file == file) {
+            f.mtime = now;
+        }
+    });
 }
 
 /// Copies a modified file next to its archive as "name (modificado).ext",

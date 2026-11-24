@@ -21,6 +21,7 @@ pub mod es {
     pub const COL_SIZE: &str = "Tamaño";
     pub const COL_PACKED: &str = "Comprimido";
     pub const COL_MODIFIED: &str = "Modificado";
+    pub const COL_CRC: &str = "CRC32";
 
     pub const UP_ROW: &str = "..";
     pub const FILTER_CUE: &str = "Filtrar en todo el archivo (Ctrl+F)";
@@ -70,7 +71,7 @@ pub mod es {
     pub const OPEN_FAILED: &str = "No se pudo abrir el archivo";
     pub const MODIFIED_TITLE: &str = "Archivos modificados";
     pub const MODIFIED_MAIN: &str = "Modificaste archivos abiertos desde el comprimido";
-    pub const MODIFIED_TEXT: &str = "Kibotós todavía no puede guardar cambios dentro de un comprimido (llegará en la v0.2). Puedes guardar una copia de cada archivo junto al comprimido.";
+    pub const MODIFIED_TEXT: &str = "Este comprimido no se puede modificar. Puedes guardar una copia de cada archivo junto al comprimido.";
     pub const SAVE_COPIES: &str = "&Guardar copias";
     pub const DISCARD: &str = "&Descartar cambios";
     pub const MODIFIED_SUFFIX: &str = "modificado";
@@ -134,6 +135,37 @@ pub mod es {
     pub const CTX_LOCATE: &str = "&Mostrar en su carpeta\tCtrl+Enter";
     pub const CTX_COPY_PATH: &str = "Copiar &ruta";
     pub const CTX_PROPERTIES: &str = "&Propiedades\tAlt+Enter";
+    pub const CTX_SHA256: &str = "Calcular &SHA-256";
+    pub const CTX_RENAME: &str = "Cambiar &nombre\tF2";
+    pub const CTX_DELETE: &str = "E&liminar\tSupr";
+    pub const CTX_NEW_FOLDER: &str = "Nue&va carpeta\tCtrl+Mayús+N";
+
+    // Changing an archive
+    pub const NEW_FOLDER_NAME: &str = "Nueva carpeta";
+    pub const PROGRESS_UPDATING: &str = "Actualizando";
+    pub const PROGRESS_HASHING: &str = "Calculando SHA-256 de";
+    pub const DELETE_TITLE: &str = "Eliminar del comprimido";
+    pub const DELETE_TEXT: &str = "Se quitarán del archivo comprimido. No se puede deshacer.";
+    pub const DELETE_BUTTON: &str = "&Eliminar";
+    pub const ADD_TITLE: &str = "Añadir al comprimido";
+    pub const ADD_BUTTON: &str = "&Añadir";
+    pub const ADD_OPEN_BUTTON: &str = "A&brir este archivo";
+    pub const UPDATE_ERROR_TITLE: &str = "No se pudo modificar el comprimido";
+    pub const READ_ONLY_TITLE: &str = "Comprimido de solo lectura";
+    pub const READ_ONLY_RAR: &str = "Los archivos RAR solo se pueden leer: la licencia de unRAR no permite crearlos ni modificarlos.";
+    pub const READ_ONLY_SPLIT: &str = "Los comprimidos divididos en partes solo se pueden leer.";
+    pub const READ_ONLY_ATTRIBUTE: &str = "El archivo está marcado como de solo lectura.";
+    pub const RENAME_TITLE: &str = "Cambiar nombre";
+    pub const RENAME_INVALID: &str = "El nombre no puede estar vacío, ser «.» o «..», terminar en punto o espacio, ni contener \\ / : * ? \" < > |";
+    pub const RENAME_RESERVED: &str = "Windows reserva ese nombre para dispositivos (CON, PRN, AUX, NUL, COM1...).";
+    pub const EDITED_TITLE: &str = "Archivo modificado";
+    pub const UPDATE_ARCHIVE_BUTTON: &str = "&Actualizar el comprimido";
+    pub const NOT_NOW: &str = "Ahora &no";
+    pub const SHA_TITLE: &str = "SHA-256";
+    pub const COPY_BUTTON: &str = "&Copiar";
+    pub const CLOSE_BUTTON: &str = "C&errar";
+    pub const STATUS_SHA_COPIED: &str = "SHA-256 copiado al portapapeles.";
+    pub const SHA_NOTHING: &str = "La selección no contiene archivos.";
     pub const CTX_OPEN_ARCHIVE: &str = "&Abrir en Kibotós	Enter";
     pub const CTX_EXTRACT_HERE: &str = "Extraer a&quí";
     pub const CTX_EXTRACT_EACH: &str = "Extraer cada uno en una carpeta con su &nombre";
@@ -384,6 +416,52 @@ pub fn crash_message(what: &str, log: &str) -> String {
 
 Los detalles se guardaron en:
 {log}")
+}
+
+/// "¿Eliminar «a.txt» de «x.zip»?" / "¿Eliminar 3 elementos de «x.zip»?"
+pub fn delete_main(count: usize, single: Option<&str>, archive: &str) -> String {
+    match single {
+        Some(name) => format!("¿Eliminar «{name}» de «{archive}»?"),
+        None => format!("¿Eliminar {} elementos de «{archive}»?", number(count as u64)),
+    }
+}
+
+/// "¿Añadir «fotos» a «docs» en «x.zip»?" (the root is the archive itself).
+pub fn add_main(count: usize, single: Option<&str>, folder: &str, archive: &str) -> String {
+    let what = match single {
+        Some(name) => format!("«{name}»"),
+        None => format!("{} elementos", number(count as u64)),
+    };
+    if folder.is_empty() { format!("¿Añadir {what} a «{archive}»?") } else { format!("¿Añadir {what} a «{folder}» en «{archive}»?") }
+}
+
+pub fn add_replaces(n: usize) -> String {
+    if n == 1 {
+        "Ya hay un elemento con el mismo nombre: se reemplazará.".into()
+    } else {
+        format!("Ya hay {} elementos con el mismo nombre: se reemplazarán.", number(n as u64))
+    }
+}
+
+pub fn read_only_format(format: &str) -> String {
+    format!("Kibotós puede leer archivos {format}, pero no modificarlos.")
+}
+
+pub fn rename_exists(name: &str) -> String {
+    format!("Ya hay un elemento llamado «{name}» en esta carpeta.")
+}
+
+pub fn edited_main(name: &str) -> String {
+    format!("«{name}» se modificó")
+}
+
+pub fn edited_text(archive: &str) -> String {
+    format!("¿Guardar los cambios dentro de «{archive}»? El comprimido se actualizará con la nueva versión del archivo.")
+}
+
+/// Status line after a change: "Comprimido actualizado en 0,4 s".
+pub fn updated(secs: f64) -> String {
+    format!("Comprimido actualizado en {} s", format!("{secs:.1}").replace('.', ","))
 }
 
 pub fn error_message(e: &Error) -> String {

@@ -251,7 +251,8 @@ pub fn list(place: Place) -> std::io::Result<Listing> {
 fn compare(a: &Item, b: &Item, key: SortKey) -> Ordering {
     let by_name = || natural_cmp(&a.lower, &b.lower);
     match key {
-        SortKey::Name => by_name(),
+        // Files on disk have no stored CRC.
+        SortKey::Name | SortKey::Crc => by_name(),
         SortKey::Size => a.size.cmp(&b.size).then_with(by_name),
         SortKey::Packed => a.extra.to_lowercase().cmp(&b.extra.to_lowercase()).then_with(by_name),
         SortKey::Modified => {

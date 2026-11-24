@@ -24,7 +24,9 @@ use windows::core::HSTRING;
 
 use crate::strings::t;
 
-pub const PROGID: &str = "Kibotos.Archive";
+/// The single ProgID of v0.1 and v0.2 (one icon for every type). Still
+/// removed by `remove_at`; each extension now has its own (see `progid`).
+const LEGACY_PROGID: &str = "Kibotos.Archive";
 const MENU: &str = "Kibotos.Menu";
 /// "Comprimir con Kibotós", on every file and folder.
 const COMPRESS_MENU: &str = "Kibotos.CompressMenu";
@@ -32,12 +34,14 @@ const COMPRESS_VERB: &str = "Kibotos.Compress";
 const COMPRESS_TARGETS: [&str; 2] = ["*", "Directory"];
 const APP: &str = "Kibotos";
 
-/// Extensions Kibotós offers to open. `.jar` and `.apk` get the context
-/// menu and "Abrir con", which never changes how they run by default.
-pub const EXTENSIONS: &[&str] = &[
-    "zip", "jar", "apk", "cbz", "7z", "rar", "cbr", "tar", "gz", "tgz", "bz2", "tbz", "tbz2", "xz", "txz", "zst", "tzst",
-    "lz4", "tlz4", "lzma", "tlz", "lz", "z", "taz", "iso", "cab", "msi", "001",
-];
+pub use crate::file_types::EXTENSIONS;
+use crate::file_types::TYPE_ICON_BASE;
+
+/// One ProgID per extension, so each type shows its own icon
+/// ("Kibotos.zip", "Kibotos.7z"...).
+fn progid(ext: &str) -> String {
+    format!("Kibotos.{ext}")
+}
 
 fn check(e: WIN32_ERROR) -> io::Result<()> {
     if e.0 == 0 { Ok(()) } else { Err(io::Error::from_raw_os_error(e.0 as i32)) }
@@ -181,13 +185,16 @@ fn install_at(l: &Layout, exe: &Path) -> io::Result<()> {
     let open = format!("\"{exe_s}\" \"%1\"");
     let classes = l.classes();
 
-    // ProgID: what "Kibotós" means for an archive.
-    let progid = format!(r"{classes}\{PROGID}");
-    Key::create(&progid)?.set("", t::REG_TYPE_NAME)?;
-    Key::create(&format!(r"{progid}\DefaultIcon"))?.set("", &icon)?;
-    Key::create(&format!(r"{progid}\shell"))?.set("", "open")?;
-    Key::create(&format!(r"{progid}\shell\open"))?.set("", t::REG_OPEN)?;
-    Key::create(&format!(r"{progid}\shell\open\command"))?.set("", &open)?;
+    // ProgIDs: what "Kibotós" means for each type, with its own icon.
+    for (i, ext) in EXTENSIONS.iter().enumerate() {
+        let key = format!(r"{classes}\{}", progid(ext));
+        Key::create(&key)?.set("", &format!("{} {}", t::REG_TYPE_NAME, ext.to_uppercase()))?;
+        let type_icon = format!("\"{exe_s}\",-{}", TYPE_ICON_BASE + i as u16);
+        Key::create(&format!(r"{key}\DefaultIcon"))?.set("", &type_icon)?;
+        Key::create(&format!(r"{key}\shell"))?.set("", "open")?;
+        Key::create(&format!(r"{key}\shell\open"))?.set("", t::REG_OPEN)?;
+        Key::create(&format!(r"{key}\shell\open\command"))?.set("", &open)?;
+    }
 
     // The submenu's verbs (ordered by key name).
     let menu = format!(r"{classes}\{MENU}\shell");
@@ -243,9 +250,9 @@ fn install_at(l: &Layout, exe: &Path) -> io::Result<()> {
     for ext in EXTENSIONS {
         let dot = format!(".{ext}");
         // Offered in "Abrir con"; the default program is left alone.
-        Key::create(&format!(r"{classes}\{dot}\OpenWithProgids"))?.set_raw(PROGID, REG_NONE, &[])?;
+        Key::create(&format!(r"{classes}\{dot}\OpenWithProgids"))?.set_raw(&progid(ext), REG_NONE, &[])?;
         supported.set(&dot, "")?;
-        assoc.set(&dot, PROGID)?;
+        assoc.set(&dot, &progid(ext))?;
         // The cascading "Kibotós" entry in the context menu.
         let entry = Key::create(&format!(r"{classes}\SystemFileAssociations\{dot}\shell\{APP}"))?;
         entry.set("MUIVerb", t::APP_NAME)?;
@@ -267,7 +274,10 @@ fn remove_at(l: &Layout) -> io::Result<()> {
     let current = std::env::current_exe().ok().and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
     let exe_name = Key::open(&l.app()).and_then(|k| k.get("ExeName")).or(current).unwrap_or_else(|| "kibotos.exe".into());
 
-    delete_tree(&format!(r"{classes}\{PROGID}"))?;
+    delete_tree(&format!(r"{classes}\{LEGACY_PROGID}"))?;
+    for ext in EXTENSIONS {
+        delete_tree(&format!(r"{classes}\{}", progid(ext)))?;
+    }
     delete_tree(&format!(r"{classes}\{MENU}"))?;
     delete_tree(&format!(r"{classes}\{COMPRESS_MENU}"))?;
     for target in COMPRESS_TARGETS {
@@ -278,7 +288,8 @@ fn remove_at(l: &Layout) -> io::Result<()> {
     delete_tree(&format!(r"{classes}\Applications\{exe_name}"))?;
     for ext in EXTENSIONS {
         let dot = format!(".{ext}");
-        delete_value(&format!(r"{classes}\{dot}\OpenWithProgids"), PROGID)?;
+        delete_value(&format!(r"{classes}\{dot}\OpenWithProgids"), LEGACY_PROGID)?;
+        delete_value(&format!(r"{classes}\{dot}\OpenWithProgids"), &progid(ext))?;
         remove_if_empty(&format!(r"{classes}\{dot}\OpenWithProgids"));
         remove_if_empty(&format!(r"{classes}\{dot}"));
         delete_tree(&format!(r"{classes}\SystemFileAssociations\{dot}\shell\{APP}"))?;
@@ -343,16 +354,24 @@ mod tests {
         // Another program's entry under one of our extensions must survive.
         Key::create(&format!(r"{scratch}\Classes\.zip\OpenWithProgids")).unwrap().set_raw("Otro.Zip", REG_NONE, &[]).unwrap();
 
+        // A v0.2 install (single ProgID) is cleaned up too.
+        Key::create(&format!(r"{scratch}\Classes\{LEGACY_PROGID}\shell")).unwrap();
+        Key::create(&format!(r"{scratch}\Classes\.rar\OpenWithProgids")).unwrap().set_raw(LEGACY_PROGID, REG_NONE, &[]).unwrap();
+
         install_at(&l, exe).unwrap();
         let classes = l.classes();
         let get = |path: &str, name: &str| Key::open(path).and_then(|k| k.get(name));
-        assert_eq!(get(&format!(r"{classes}\{PROGID}\shell\open\command"), "").unwrap(), format!("\"{}\" \"%1\"", exe.display()));
+        assert_eq!(get(&format!(r"{classes}\Kibotos.zip\shell\open\command"), "").unwrap(), format!("\"{}\" \"%1\"", exe.display()));
+        // Each type has its own icon: zip is the first extension, 7z the fifth.
+        assert_eq!(get(&format!(r"{classes}\Kibotos.zip\DefaultIcon"), "").unwrap(), format!("\"{}\",-101", exe.display()));
+        assert_eq!(get(&format!(r"{classes}\Kibotos.7z\DefaultIcon"), "").unwrap(), format!("\"{}\",-105", exe.display()));
+        assert_eq!(get(&format!(r"{classes}\Kibotos.7z"), "").unwrap(), "Archivo comprimido 7Z");
         assert_eq!(
             get(&format!(r"{classes}\{MENU}\shell\2here\command"), "").unwrap(),
             format!("\"{}\" --extract-here \"%1\"", exe.display())
         );
         assert_eq!(get(&format!(r"{classes}\SystemFileAssociations\.7z\shell\{APP}"), "ExtendedSubCommandsKey").unwrap(), MENU);
-        assert_eq!(get(&format!(r"{}\FileAssociations", l.capabilities()), ".rar").unwrap(), PROGID);
+        assert_eq!(get(&format!(r"{}\FileAssociations", l.capabilities()), ".rar").unwrap(), "Kibotos.rar");
         assert!(Key::open(&format!(r"{classes}\Applications\kibotos-v0.1.exe")).is_some());
         assert_eq!(get(&format!(r"{classes}\*\shell\{COMPRESS_VERB}"), "ExtendedSubCommandsKey").unwrap(), COMPRESS_MENU);
         assert_eq!(get(&format!(r"{classes}\Directory\shell\{COMPRESS_VERB}"), "MultiSelectModel").unwrap(), "Player");
@@ -364,7 +383,9 @@ mod tests {
         assert!(get(&format!(r"{classes}\.zip"), "").is_none());
 
         remove_at(&l).unwrap();
-        assert!(Key::open(&format!(r"{classes}\{PROGID}")).is_none());
+        assert!(Key::open(&format!(r"{classes}\{LEGACY_PROGID}")).is_none());
+        assert!(Key::open(&format!(r"{classes}\Kibotos.zip")).is_none());
+        assert!(Key::open(&format!(r"{classes}\.rar")).is_none(), "legacy OpenWithProgids value removed");
         assert!(Key::open(&format!(r"{classes}\.7z")).is_none(), "empty keys we created are removed");
         assert!(Key::open(&format!(r"{classes}\SystemFileAssociations")).is_none_or(|k| k.is_empty()));
         assert!(Key::open(&l.app()).is_none());

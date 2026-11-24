@@ -10,7 +10,7 @@ use windows::Win32::Graphics::Gdi::{CreateFontIndirectW, DeleteObject, HFONT, HG
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::{
-    TASKDIALOG_BUTTON, TASKDIALOGCONFIG, TASKDIALOGCONFIG_0, TD_WARNING_ICON,
+    TASKDIALOG_BUTTON, TASKDIALOGCONFIG, TASKDIALOGCONFIG_0, TD_INFORMATION_ICON, TDF_SIZE_TO_CONTENT, TD_WARNING_ICON,
     TDF_ALLOW_DIALOG_CANCELLATION, TDF_POSITION_RELATIVE_TO_WINDOW, TaskDialogIndirect,
 };
 use windows::Win32::UI::HiDpi::{GetDpiForWindow, SystemParametersInfoForDpi};
@@ -304,6 +304,21 @@ pub fn ask_conflict(owner: HWND, target: &Path, new_size: Option<u64>, new_modif
 /// A question with custom (Spanish) buttons. Returns the chosen id, or
 /// `IDCANCEL` when the dialog is dismissed with Esc or the close button.
 pub fn choose(owner: HWND, title: &str, main: &str, content: &str, buttons: &[(i32, &str)]) -> i32 {
+    choose_with(owner, title, main, content, buttons, TD_WARNING_ICON, false)
+}
+
+/// Like [`choose`], with the information icon (a result, not a warning).
+pub fn choose_info(owner: HWND, title: &str, main: &str, content: &str, buttons: &[(i32, &str)]) -> i32 {
+    choose_with(owner, title, main, content, buttons, TD_INFORMATION_ICON, false)
+}
+
+/// Like [`choose_info`], as wide as its longest line (hashes must not be
+/// cut).
+pub fn choose_info_wide(owner: HWND, title: &str, main: &str, content: &str, buttons: &[(i32, &str)]) -> i32 {
+    choose_with(owner, title, main, content, buttons, TD_INFORMATION_ICON, true)
+}
+
+fn choose_with(owner: HWND, title: &str, main: &str, content: &str, buttons: &[(i32, &str)], icon: PCWSTR, wide_box: bool) -> i32 {
     let title = wide(title);
     let main = wide(main);
     let body = wide(content);
@@ -316,9 +331,9 @@ pub fn choose(owner: HWND, title: &str, main: &str, content: &str, buttons: &[(i
     let cfg = TASKDIALOGCONFIG {
         cbSize: std::mem::size_of::<TASKDIALOGCONFIG>() as u32,
         hwndParent: owner,
-        dwFlags: TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW,
+        dwFlags: TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW | if wide_box { TDF_SIZE_TO_CONTENT } else { Default::default() },
         pszWindowTitle: PCWSTR(title.as_ptr()),
-        Anonymous1: TASKDIALOGCONFIG_0 { pszMainIcon: TD_WARNING_ICON },
+        Anonymous1: TASKDIALOGCONFIG_0 { pszMainIcon: icon },
         pszMainInstruction: PCWSTR(main.as_ptr()),
         pszContent: PCWSTR(body.as_ptr()),
         cButtons: specs.len() as u32,

@@ -4,15 +4,13 @@
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, mpsc};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use kibotos_core::{Codec, Control, CreateFormat, CreateOptions, CreateReport, Error, Level};
+use kibotos_core::{Codec, CreateFormat, CreateOptions, CreateReport, Error, Level};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{DeleteObject, HGDIOBJ};
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetFocus};
 use windows::Win32::UI::Shell::{FileSaveDialog, IFileSaveDialog, IShellItem, SHCreateItemFromParsingName, SIGDN_FILESYSPATH};
@@ -21,7 +19,7 @@ use windows::core::{HSTRING, PCWSTR, w};
 
 use crate::dialogs::{self, centered, message_font, scale};
 use crate::strings::{self, t};
-use crate::{integrate, progress};
+use crate::integrate;
 
 /// Formats offered, in menu order.
 pub const FORMATS: [(CreateFormat, &str); 7] = [
@@ -475,62 +473,11 @@ pub enum Outcome {
 /// Creates the archive on a worker thread, showing the progress window
 /// (after 300 ms) and keeping this thread's windows responsive.
 pub fn run(owner: Option<HWND>, inputs: &[PathBuf], req: &Request) -> Outcome {
-    let ctl = Arc::new(Control::new());
     let name = file_name(&req.output);
     let title = format!("{} {name}", t::PROGRESS_COMPRESSING);
     let heading = format!("{}  →  {name}", base_name(inputs));
-    progress::open(owner, &title, &heading, ctl.clone());
-    let (tx, rx) = mpsc::channel();
-    let (inputs, req2, ctl2) = (inputs.to_vec(), req.clone(), ctl.clone());
-    let tid = unsafe { GetCurrentThreadId() };
-    std::thread::spawn(move || {
-        let t0 = Instant::now();
-        let r = kibotos_core::create(&req2.output, &inputs, &req2.options, &ctl2);
-        let _ = tx.send((r, t0.elapsed()));
-        unsafe {
-            let _ = PostThreadMessageW(tid, WM_NULL, WPARAM(0), LPARAM(0));
-        }
-    });
-    if let Some(o) = owner {
-        unsafe {
-            let _ = EnableWindow(o, false);
-        }
-    }
-    // A thread timer wakes the loop even if the wake-up message is lost
-    // (thread messages vanish while a modal loop runs).
-    let timer = unsafe { SetTimer(None, 0, 100, None) };
-    let mut quit = None;
-    let (result, took) = loop {
-        if let Ok(r) = rx.try_recv() {
-            break r;
-        }
-        let mut msg = MSG::default();
-        unsafe {
-            if !GetMessageW(&mut msg, None, 0, 0).as_bool() {
-                // The app is closing: stop and wait for the worker.
-                quit = Some(msg.wParam.0 as i32);
-                ctl.cancel();
-                break rx.recv().unwrap_or((Err(Error::Cancelled), Duration::ZERO));
-            }
-            if let Some(p) = progress::current() {
-                if IsDialogMessageW(p, &msg).as_bool() {
-                    continue;
-                }
-            }
-            let _ = TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
-    };
-    unsafe {
-        let _ = KillTimer(None, timer);
-        if let Some(o) = owner {
-            let _ = EnableWindow(o, true);
-        }
-    }
-    progress::close();
-    if let Some(code) = quit {
-        unsafe { PostQuitMessage(code) };
-    }
+    let (inputs, req2) = (inputs.to_vec(), req.clone());
+    let (result, took) = crate::task::run(owner, &title, &heading, move |ctl| kibotos_core::create(&req2.output, &inputs, &req2.options, ctl));
     match result {
         Ok(report) => Outcome::Done(report, took),
         Err(Error::Cancelled) => Outcome::Cancelled,
