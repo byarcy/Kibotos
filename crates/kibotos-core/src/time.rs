@@ -83,7 +83,29 @@ pub(crate) fn local_to_utc(local: i64) -> i64 {
     )
 }
 
-#[cfg(not(windows))]
+/// Wall-clock seconds in the current time zone to UTC (`mktime`, which also
+/// knows daylight saving time).
+#[cfg(unix)]
+pub(crate) fn local_to_utc(local: i64) -> i64 {
+    let (y, mo, d, h, mi, s) = civil_from_secs(local);
+    // SAFETY: a zeroed tm is valid; mktime only reads and normalizes it.
+    unsafe {
+        let mut tm: libc::tm = std::mem::zeroed();
+        tm.tm_year = y - 1900;
+        tm.tm_mon = mo as i32 - 1;
+        tm.tm_mday = d as i32;
+        tm.tm_hour = h as i32;
+        tm.tm_min = mi as i32;
+        tm.tm_sec = s as i32;
+        tm.tm_isdst = -1;
+        match libc::mktime(&mut tm) {
+            -1 => local,
+            t => t as i64,
+        }
+    }
+}
+
+#[cfg(not(any(windows, unix)))]
 pub(crate) fn local_to_utc(local: i64) -> i64 {
     local
 }
@@ -113,7 +135,20 @@ pub(crate) fn utc_to_local(utc: i64) -> i64 {
     secs_from_civil(lt.wYear as i32, lt.wMonth as u32, lt.wDay as u32, lt.wHour as u32, lt.wMinute as u32, lt.wSecond as u32)
 }
 
-#[cfg(not(windows))]
+#[cfg(unix)]
+pub(crate) fn utc_to_local(utc: i64) -> i64 {
+    // SAFETY: a zeroed tm is a valid output buffer.
+    unsafe {
+        let t = utc as libc::time_t;
+        let mut tm: libc::tm = std::mem::zeroed();
+        if libc::localtime_r(&t, &mut tm).is_null() {
+            return utc;
+        }
+        utc + tm.tm_gmtoff as i64
+    }
+}
+
+#[cfg(not(any(windows, unix)))]
 pub(crate) fn utc_to_local(utc: i64) -> i64 {
     utc
 }

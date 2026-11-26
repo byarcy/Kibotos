@@ -34,9 +34,15 @@ msi = "0.11"
 sha2 = { version = "0.11", default-features = false }
 lzxd = "0.2"
 
-[target.'cfg(windows)'.dependencies]
 # Official unRAR source (extraction only). See licenses/unRAR-license.txt.
 unrar_sys = "0.5.8"
+
+[target.'cfg(unix)'.dependencies]
+# Locale for unRAR's file names, the time zone, and the quarantine
+# extended attribute on macOS.
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Time", "Win32_Globalization"] }
 
 [dev-dependencies]

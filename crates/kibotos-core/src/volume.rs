@@ -32,8 +32,22 @@ fn numbered(name: &str) -> Option<(&str, u32, usize)> {
     Some((&name[..=dot], digits.parse().ok()?, digits.len()))
 }
 
+/// The part `name` next to `path`. On a case-sensitive file system (an
+/// option on macOS, the rule on Linux) "ARCHIVE.Z01" is not "archive.z01":
+/// if the exact name is missing, a name that differs only in case is used.
 fn sibling(path: &Path, name: String) -> PathBuf {
-    path.with_file_name(name)
+    let exact = path.with_file_name(&name);
+    if exact.exists() {
+        return exact;
+    }
+    let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    std::fs::read_dir(dir)
+        .ok()
+        .and_then(|entries| {
+            entries.flatten().map(|e| e.file_name()).find(|n| n.to_str().is_some_and(|n| n.eq_ignore_ascii_case(&name)))
+        })
+        .map(|found| path.with_file_name(found))
+        .unwrap_or(exact)
 }
 
 fn file_name(path: &Path) -> Option<&str> {

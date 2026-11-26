@@ -110,10 +110,7 @@ pub fn open_as(path: &Path, format: Format, opts: &OpenOptions) -> Result<Box<dy
     Ok(match format {
         Format::Zip => Box::new(formats::zip::ZipBackend::open(path, password)?),
         Format::SevenZip => Box::new(formats::sevenz::SevenZipBackend::open(path, password)?),
-        #[cfg(windows)]
         Format::Rar => Box::new(formats::rar::RarBackend::open(path, password)?),
-        #[cfg(not(windows))]
-        Format::Rar => return Err(Error::Unsupported("RAR is only supported on Windows".into())),
         Format::Tar(codec) => Box::new(formats::tar::TarBackend::open(path, codec)?),
         Format::Compressed(codec) => Box::new(formats::single::SingleBackend::open(path, codec)?),
         Format::Iso => Box::new(formats::iso::IsoBackend::open(path)?),

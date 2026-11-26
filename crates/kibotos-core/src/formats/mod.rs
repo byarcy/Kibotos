@@ -3,7 +3,6 @@
 pub mod cab;
 pub mod iso;
 pub mod msi;
-#[cfg(windows)]
 pub mod rar;
 pub mod sevenz;
 pub mod single;
