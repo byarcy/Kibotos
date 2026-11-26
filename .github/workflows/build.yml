@@ -1,0 +1,50 @@
+name: Build
+
+on:
+  push:
+    branches: [macos]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  macos:
+    name: macOS (universal .dmg)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Core tests
+        run: cargo test --locked -p kibotos-core
+
+      - name: Build, bundle, sign and make the .dmg
+        run: scripts/macos/bundle.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kibotos-mac-dmg
+          path: build/kibotos-mac-v*.dmg
+          if-no-files-found: error
+
+  windows:
+    name: Windows (build and tests)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --locked --workspace
+
+      - name: Tests
+        run: cargo test --locked --workspace
