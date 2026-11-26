@@ -21,6 +21,6 @@ rfd = { version = "0.18", default-features = false }
 muda = { version = "0.22", default-features = false }
 drag = "2.1"
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", features = ["NSAppleEventDescriptor", "NSAppleEventManager", "NSString", "NSURL", "objc2-core-services"] }
+objc2-foundation = { version = "0.3", features = ["NSAppleEventDescriptor", "NSAppleEventManager", "NSNotification", "NSString", "NSURL", "objc2-core-services"] }
 # Local time for the Modified column.
 libc = "0.2"

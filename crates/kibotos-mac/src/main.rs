@@ -18,6 +18,7 @@ mod menu;
 
 #[cfg(target_os = "macos")]
 fn main() -> eframe::Result {
+    finder::install_early();
     app::run()
 }
 
