@@ -14,6 +14,22 @@ To open archives with a double click: right-click one › *Open with › Choose 
 
 The interface is in Spanish. Menu, button and dialog names in this README are translated (for example *Tools › Integrate with Windows* is *Herramientas › Integrar con Windows* on screen).
 
+## macOS
+
+A macOS version (v0.1, branch `macos`) runs on macOS 11 Big Sur or later, on Apple silicon and Intel Macs (one universal app). It shares the archive engine with the Windows version and has its own interface, in English: open and browse an archive (folder tree and file list), extract everything or the selection, create ZIP, 7z and tar archives, progress with cancel, password prompts, and drag and drop to and from Finder. Changing an existing archive is not in v0.1.
+
+**Install.**
+
+1. Download `kibotos-mac-v0.1.dmg`: from the latest successful run of the *Build* workflow in the *Actions* tab (artifact `kibotos-mac-dmg`, a .zip that contains the .dmg), or from a release once one is published.
+2. Open the .dmg and drag *Kibotos* onto *Applications*.
+3. Open Kibotos from *Applications*. The app is not notarized by Apple (it has only an ad-hoc signature), so the first time macOS says it cannot verify it. Choose *Done*, then open *System Settings › Privacy & Security*, scroll down to the message about Kibotos and click *Open Anyway*, then confirm with your password. Later launches open normally.
+
+To open archives with a double click: select one in Finder, *File › Get Info › Open with › Kibotos › Change All*. *Open With* in the right-click menu and dropping archives on the Dock icon work too.
+
+Files extracted from a downloaded archive get its quarantine mark (`com.apple.quarantine`), the macOS counterpart of the Windows Mark of the Web, so Gatekeeper still checks programs and scripts that came from the internet. Unix permissions are not kept yet: extracted programs and scripts lose their executable bit.
+
+The app is built in GitHub Actions (`.github/workflows/build.yml`) with `scripts/macos/bundle.sh`, which needs a Mac; see *Build and test*.
+
 ## Layout
 
 | Path | What |
@@ -207,6 +223,14 @@ cargo test -p kibotos-core
 ```bash
 cargo build --release
 ```
+
+On a Mac (Xcode command line tools, and `rustup target add aarch64-apple-darwin x86_64-apple-darwin`):
+
+```bash
+scripts/macos/bundle.sh
+```
+
+builds the universal app, signs it ad hoc and writes `build/kibotos-mac-v<version>.dmg` (version from `crates/kibotos-mac/Cargo.toml`).
 
 ## Console tool
 
