@@ -165,9 +165,9 @@ mod tests {
 
     #[test]
     fn join_stays_inside() {
-        let dest = Path::new("C:\\out");
+        let dest = Path::new(if cfg!(windows) { "C:\\out" } else { "/out" });
         let p = safe_join(dest, "a/b:c/d").unwrap();
-        assert_eq!(p, Path::new("C:\\out\\a\\b_c\\d"));
+        assert_eq!(p, dest.join("a").join("b_c").join("d"));
         assert!(safe_join(dest, "D:evil").is_err());
     }
 }
