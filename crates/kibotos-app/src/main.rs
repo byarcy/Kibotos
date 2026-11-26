@@ -1,34 +1,56 @@
 //! Kibotós: a fast, lightweight archive manager for Windows.
 
-#![windows_subsystem = "windows"]
+#![cfg_attr(windows, windows_subsystem = "windows")]
 
+#[cfg(windows)]
 mod cli;
+#[cfg(windows)]
 mod collect;
+#[cfg(windows)]
 mod compress;
+#[cfg(windows)]
 mod dialogs;
+#[cfg(windows)]
 mod drag;
+#[cfg(windows)]
 mod file_types;
+#[cfg(windows)]
 mod format;
+#[cfg(windows)]
 mod fsview;
+#[cfg(windows)]
 mod icons;
+#[cfg(windows)]
 mod install;
+#[cfg(windows)]
 mod integrate;
+#[cfg(windows)]
 mod job;
+#[cfg(windows)]
 mod progress;
+#[cfg(windows)]
 mod strings;
+#[cfg(windows)]
 mod task;
+#[cfg(windows)]
 mod temp;
+#[cfg(windows)]
 mod timing;
+#[cfg(windows)]
 mod update;
+#[cfg(windows)]
 mod window;
 
+#[cfg(windows)]
 use std::path::PathBuf;
 
+#[cfg(windows)]
 /// UTF-16, NUL-terminated, for Win32 calls.
 pub fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
+#[cfg(windows)]
 /// The chest icon embedded by build.rs (resource id 1), at the system's
 /// large or small icon size.
 pub fn app_icon(small: bool) -> windows::Win32::UI::WindowsAndMessaging::HICON {
@@ -47,6 +69,7 @@ pub fn app_icon(small: bool) -> windows::Win32::UI::WindowsAndMessaging::HICON {
     }
 }
 
+#[cfg(windows)]
 /// A panic aborts the process (panic = "abort"), which for a window app
 /// means it just vanishes. Record what failed in `%TEMP%\Kibotos\crash.log`
 /// and tell the user before that happens.
@@ -89,6 +112,7 @@ fn install_panic_hook() {
     }));
 }
 
+#[cfg(windows)]
 fn main() {
     install_panic_hook();
     timing::mark("main", "");
@@ -102,4 +126,11 @@ fn main() {
     // (Explorer passes "%1"; dragging a file onto the .exe does the same).
     // Without one, the window starts in "Este equipo".
     window::run(args.into_iter().next().filter(|a| !a.is_empty()).map(PathBuf::from));
+}
+
+/// The Windows app does not exist elsewhere; the macOS app is kibotos-mac.
+#[cfg(not(windows))]
+fn main() {
+    eprintln!("kibotos-app is the Windows version of Kibotos; on macOS build kibotos-mac.");
+    std::process::exit(1);
 }

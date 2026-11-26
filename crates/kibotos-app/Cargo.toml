@@ -10,7 +10,9 @@ authors.workspace = true
 name = "kibotos"
 path = "src/main.rs"
 
-[dependencies]
+# The app is Win32 only: on other systems the binary is a stub (see
+# main.rs), so `cargo build` at the workspace root works everywhere.
+[target.'cfg(windows)'.dependencies]
 kibotos-core = { path = "../kibotos-core" }
 # The COM `implement` macro expands to paths in windows-core.
 windows-core = "0.62"

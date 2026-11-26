@@ -1,0 +1,26 @@
+[package]
+name = "kibotos-mac"
+description = "Kibotos for macOS: archive manager UI (eframe/egui)"
+# The macOS build has its own version line, starting at 0.1.
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "kibotos-mac"
+path = "src/main.rs"
+
+# Everything is macOS-only: on other systems the binary is a stub, so
+# `cargo build` at the workspace root works everywhere.
+[target.'cfg(target_os = "macos")'.dependencies]
+kibotos-core = { path = "../kibotos-core" }
+eframe = "0.31"
+egui_extras = "0.31"
+rfd = { version = "0.18", default-features = false }
+muda = { version = "0.22", default-features = false }
+drag = "2.1"
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSAppleEventDescriptor", "NSAppleEventManager", "NSString", "NSURL", "objc2-core-services"] }
+# Local time for the Modified column.
+libc = "0.2"
